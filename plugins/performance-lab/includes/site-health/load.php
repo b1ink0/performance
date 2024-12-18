@@ -29,3 +29,7 @@ require_once __DIR__ . '/avif-support/hooks.php';
 // AVIF headers site health check.
 require_once __DIR__ . '/avif-headers/helper.php';
 require_once __DIR__ . '/avif-headers/hooks.php';
+
+// REST API site health check.
+require_once __DIR__ . '/rest-api/helper.php';
+require_once __DIR__ . '/rest-api/hooks.php';
