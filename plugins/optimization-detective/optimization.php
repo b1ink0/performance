@@ -226,6 +226,12 @@ function od_optimize_template_output_buffer( string $buffer ): string {
 	// Whether we need to add the data-od-xpath attribute to elements and whether the detection script should be injected.
 	$needs_detection = ! $group_collection->is_every_group_complete();
 
+	// Disable detection if the REST API is disabled.
+	$od_rest_api_info = get_option( 'perflab_od_rest_api_info' );
+	if ( is_array( $od_rest_api_info ) && isset( $od_rest_api_info['available'] ) ) {
+		$needs_detection = (bool) $od_rest_api_info['available'];
+	}
+
 	do {
 		$tracked_in_url_metrics = false;
 		$processor->set_bookmark( $current_tag_bookmark ); // TODO: Should we break if this returns false?

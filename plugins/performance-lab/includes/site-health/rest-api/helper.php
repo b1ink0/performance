@@ -49,6 +49,13 @@ function perflab_optimization_detective_rest_api_test(): array {
 			'<p>%s</p>',
 			esc_html__( 'The Optimization Detective endpoint could not be reached. This might mean the REST API is disabled or blocked.', 'performance-lab' )
 		);
+		update_option(
+			'perflab_od_rest_api_info',
+			array(
+				'status'    => 'error',
+				'available' => false,
+			)
+		);
 		return $result;
 	}
 
@@ -62,6 +69,13 @@ function perflab_optimization_detective_rest_api_test(): array {
 		&& count( $expected_params ) === count( array_intersect( $data['data']['params'], $expected_params ) )
 	) {
 		// The REST API endpoint is available.
+		update_option(
+			'perflab_od_rest_api_info',
+			array(
+				'status'    => 'ok',
+				'available' => true,
+			)
+		);
 		return $result;
 	} elseif ( 401 === $status_code ) {
 		$result['status']      = 'recommended';
@@ -70,12 +84,26 @@ function perflab_optimization_detective_rest_api_test(): array {
 			'<p>%s</p>',
 			esc_html__( 'The REST API endpoint requires authentication. Ensure proper credentials are provided.', 'performance-lab' )
 		);
+		update_option(
+			'perflab_od_rest_api_info',
+			array(
+				'status'    => 'unauthorized',
+				'available' => false,
+			)
+		);
 	} elseif ( 403 === $status_code ) {
 		$result['status']      = 'recommended';
 		$result['label']       = __( 'Your site encountered forbidden error for Optimization Detective REST API endpoint', 'performance-lab' );
 		$result['description'] = sprintf(
 			'<p>%s</p>',
 			esc_html__( 'The REST API endpoint is blocked check server or security settings.', 'performance-lab' )
+		);
+		update_option(
+			'perflab_od_rest_api_info',
+			array(
+				'status'    => 'forbidden',
+				'available' => false,
+			)
 		);
 	}
 
