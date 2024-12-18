@@ -81,3 +81,25 @@ function perflab_optimization_detective_rest_api_test(): array {
 
 	return $result;
 }
+
+/**
+ * Periodically runs the Optimization Detective REST API health check.
+ *
+ * @since n.e.x.t
+ */
+function perflab_schedule_rest_api_health_check(): void {
+	if ( ! (bool) wp_next_scheduled( 'perflab_rest_api_health_check_event' ) ) {
+		wp_schedule_event( time(), 'hourly', 'perflab_rest_api_health_check_event' );
+	}
+}
+add_action( 'wp', 'perflab_schedule_rest_api_health_check' );
+
+/**
+ * Hook for the scheduled REST API health check.
+ *
+ * @since n.e.x.t
+ */
+function perflab_run_scheduled_rest_api_health_check(): void {
+	perflab_optimization_detective_rest_api_test();
+}
+add_action( 'perflab_rest_api_health_check_event', 'perflab_run_scheduled_rest_api_health_check' );
