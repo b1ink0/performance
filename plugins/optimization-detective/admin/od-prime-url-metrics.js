@@ -180,9 +180,12 @@
       }
     });
 
-    iframe.addEventListener('load', () => {
-      info.innerHTML += ' … iframe loaded successfully.';
+    window.addEventListener('message', (event) => {
+      if ('done_prime' === event.data ) {
+        info.innerHTML += ' … iframe loaded successfully.';
+      } else if ('failed_prime' === event.data) {
+        info.innerHTML += ' … iframe failed to load.';
+      }
     });
-
   });
 })();

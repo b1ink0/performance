@@ -576,21 +576,23 @@ export default async function detect( {
 		log( 'Current URL Metric:', urlMetric );
 	}
 
-	// Wait for the page to be hidden.
-	await new Promise( ( resolve ) => {
-		win.addEventListener( 'pagehide', resolve, { once: true } );
-		win.addEventListener( 'pageswap', resolve, { once: true } );
-		doc.addEventListener(
-			'visibilitychange',
-			() => {
-				if ( document.visibilityState === 'hidden' ) {
-					// TODO: This will fire even when switching tabs.
-					resolve();
-				}
-			},
-			{ once: true }
-		);
-	} );
+	if ( ! location.search.includes( 'od_prime=1' ) ) {
+		// Wait for the page to be hidden.
+		await new Promise( ( resolve ) => {
+			win.addEventListener( 'pagehide', resolve, { once: true } );
+			win.addEventListener( 'pageswap', resolve, { once: true } );
+			doc.addEventListener(
+				'visibilitychange',
+				() => {
+					if ( document.visibilityState === 'hidden' ) {
+						// TODO: This will fire even when switching tabs.
+						resolve();
+					}
+				},
+				{ once: true }
+			);
+		} );
+	}
 
 	// Only proceed with submitting the URL Metric if viewport stayed the same size. Changing the viewport size (e.g. due
 	// to resizing a window or changing the orientation of a device) will result in unexpected metrics being collected.
@@ -676,12 +678,33 @@ export default async function detect( {
 		);
 	}
 	url.searchParams.set( 'hmac', urlMetricHMAC );
-	navigator.sendBeacon(
-		url,
-		new Blob( [ JSON.stringify( urlMetric ) ], {
-			type: 'application/json',
+
+	if ( location.search.includes( 'od_prime=1' ) ) {
+		fetch( url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify( urlMetric ),
 		} )
-	);
+		.then( ( response ) => {
+			if ( ! response.ok ) {
+				throw new Error( `Failed to send URL Metric: ${ response.statusText }` );
+			}
+			window.parent.postMessage( 'done_prime', '*' );
+		} )
+		.catch( ( err ) => {
+			window.parent.postMessage( 'failed_prime', '*' );
+			error( 'Failed to send URL Metric:', err );
+		} );
+	} else {
+		navigator.sendBeacon(
+			url,
+			new Blob( [ JSON.stringify( urlMetric ) ], {
+				type: 'application/json',
+			} )
+		);
+	}
 
 	// Clean up.
 	breadcrumbedElementsMap.clear();

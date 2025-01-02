@@ -95,7 +95,6 @@ function od_register_endpoint(): void {
 			},
 			'permission_callback' => static function ( WP_REST_Request $request ) {
 				// Needs to be available to unauthenticated visitors.
-				error_log( print_r( $request, true ) );
 				if ( (bool) $request->get_param( 'od_prime' ) ) {
 					return true;
 				}
