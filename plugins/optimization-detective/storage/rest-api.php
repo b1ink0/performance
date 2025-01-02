@@ -74,6 +74,11 @@ function od_register_endpoint(): void {
 				return true;
 			},
 		),
+		'od_prime'            => array(
+			'type'        => 'boolean',
+			'description' => __( 'Whether to prime the URL Metrics.', 'optimization-detective' ),
+			'required'    => false,
+		),
 	);
 
 	register_rest_route(
@@ -88,8 +93,12 @@ function od_register_endpoint(): void {
 			'callback'            => static function ( WP_REST_Request $request ) {
 				return od_handle_rest_request( $request );
 			},
-			'permission_callback' => static function () {
+			'permission_callback' => static function ( WP_REST_Request $request ) {
 				// Needs to be available to unauthenticated visitors.
+				error_log( print_r( $request, true ) );
+				if ( (bool) $request->get_param( 'od_prime' ) ) {
+					return true;
+				}
 				if ( OD_Storage_Lock::is_locked() ) {
 					return new WP_Error(
 						'url_metric_storage_locked',

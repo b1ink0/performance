@@ -266,6 +266,9 @@ function od_get_current_url_metrics_etag( OD_Tag_Visitor_Registry $tag_visitor_r
  * @return string HMAC.
  */
 function od_get_url_metrics_storage_hmac( string $slug, string $current_etag, string $url, ?int $cache_purge_post_id = null ): string {
+	if ( isset( $_GET['od_prime'] ) ) {
+		$url = str_replace( '?od_prime=1', '', $url );
+	}
 	$action = "store_url_metric:$slug:$current_etag:$url:$cache_purge_post_id";
 	return wp_hash( $action, 'nonce' );
 }

@@ -127,5 +127,24 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 		// Add hooks for the above requires.
 		require_once __DIR__ . '/hooks.php';
+
+		// Admin page for priming URL metrics.
+		require_once __DIR__ . '/admin/prime-url-metrics.php';
 	}
 );
+
+/**
+ * Force the front-end to treat the user as logged-out if ?od_prime=1 is present,
+ * but only for front-end (non-admin) requests.
+ *
+ * @param int $user_id User ID.
+ * @return int User ID.
+ */
+function od_force_anonymous_for_prime( int $user_id ): int {
+	if ( isset( $_GET['od_prime'] ) ) {
+		return 0; // Force "not logged in".
+	}
+
+	return $user_id;
+}
+add_filter( 'determine_current_user', 'od_force_anonymous_for_prime', 20 );

@@ -28,6 +28,10 @@ const storageLockTimeSessionKey = 'odStorageLockTime';
  * @return {boolean} Whether storage is locked.
  */
 function isStorageLocked( currentTime, storageLockTTL ) {
+	if ( location.search.includes( 'od_prime=1' ) ) {
+		return false;
+	}
+
 	if ( storageLockTTL === 0 ) {
 		return false;
 	}
@@ -52,6 +56,9 @@ function isStorageLocked( currentTime, storageLockTTL ) {
  */
 function setStorageLock( currentTime ) {
 	try {
+		if ( location.search.includes( 'od_prime=1' ) ) {
+			return;
+		}
 		sessionStorage.setItem(
 			storageLockTimeSessionKey,
 			String( currentTime )
@@ -523,6 +530,10 @@ export default async function detect( {
 		},
 		elements: [],
 	};
+	
+	if ( location.search.includes( 'od_prime=1' ) ) {
+		urlMetric.url = urlMetric.url.replace( /(\?|&)od_prime=1/, '' );
+	}
 
 	const lcpMetric = lcpMetricCandidates.at( -1 );
 
@@ -655,6 +666,9 @@ export default async function detect( {
 	const url = new URL( restApiEndpoint );
 	url.searchParams.set( 'slug', urlMetricSlug );
 	url.searchParams.set( 'current_etag', currentETag );
+	if ( location.search.includes( 'od_prime=1' ) ) {
+		url.searchParams.set( 'od_prime', '1' );
+	}
 	if ( typeof cachePurgePostId === 'number' ) {
 		url.searchParams.set(
 			'cache_purge_post_id',
