@@ -69,18 +69,38 @@ function od_enqueue_admin_assets( string $hook_suffix ): void {
 	);
 
 	$bp_widths = od_get_breakpoint_max_widths();
-	$min_ar    = od_get_minimum_viewport_aspect_ratio();
-	$max_ar    = od_get_maximum_viewport_aspect_ratio();
+	sort( $bp_widths );
+	$bp_widths[] = end( $bp_widths ) + 100;
 
-	// Let's pick a “default” ratio in the middle.
-	$default_ar = ( $min_ar + $max_ar ) / 2.0;
+	$min_ar = max( 1, od_get_minimum_viewport_aspect_ratio() );
+	$max_ar = min( 2, od_get_maximum_viewport_aspect_ratio() );
 
+	// Get minimum and maximum widths for interpolation.
+	$min_width = $bp_widths[0];
+	$max_width = end( $bp_widths );
+
+	// Calculate Aspect Ratios using Inverse Proportionality.
 	$breakpoints = array_map(
-		static function ( $width ) use ( $default_ar ) {
-			$height = (int) round( $width / $default_ar );
+		static function ( $width ) use ( $min_width, $max_width, $min_ar, $max_ar ) {
+			// Prevent division by zero.
+			if ( 0 === $width ) {
+				$ar = $min_ar;
+			} else {
+				// Calculate aspect ratio.
+				$ar = $max_ar - ( ($max_ar - $min_ar) * ( ( $width - $min_width ) / ( $max_width - $min_width ) ) );
+			}
+
+			// Ensure aspect ratio does not go below min_ar.
+			if ( $ar < $min_ar ) {
+				$ar = $min_ar;
+			}
+
+			// Calculate height based on aspect ratio (height = ar * width).
+			$height = (int) round( $ar * $width );
 			return array(
 				'width'  => $width,
 				'height' => $height,
+				'ar'     => round( $ar, 2 ),
 			);
 		},
 		$bp_widths

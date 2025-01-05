@@ -10,41 +10,6 @@
     const urls = Array.isArray(odPrimeData.urls) ? odPrimeData.urls : [];
     let breakpoints = Array.isArray(odPrimeData.breakpoints) ? odPrimeData.breakpoints : [];
 
-    // Rerun a simpler approach:
-    if (breakpoints.length >= 1) {
-      // re-define a function to create n+1 items from n.
-      breakpoints = expandBreakpoints(breakpoints);
-    }
-
-    function expandBreakpoints(bps) {
-      bps.sort((a, b) => a.width - b.width);
-      const n = bps.length;
-      // We'll produce an array of length n+1.
-      const result = [];
-      // #1 => below bps[0]
-      const first = bps[0];
-      const belowW = Math.max(1, first.width - 1);
-      result.push({
-        width: belowW,
-        height: first.height
-      });
-
-      for (let i = 0; i < n; i++) {
-        result.push({
-          width: bps[i].width,
-          height: bps[i].height
-        });
-      }
-
-      const expanded = [...bps]; // copy original
-      const last = bps[n - 1];
-      expanded.push({
-        width: last.width + 100,
-        height: last.height
-      });
-      return expanded;
-    }
-
     // Indices
     let currentUrlIndex = 0;
     let currentBreakpointIndex = 0;
@@ -140,7 +105,7 @@
       iframe.width = String(bp.width);
       iframe.height = String(bp.height);
 
-      updateInfoDisplay(`Loading URL at breakpoint width=${bp.width}, height=${bp.height}`);
+      updateInfoDisplay(`Loading URL at breakpoint width=${bp.width}, height=${bp.height}, aspect=${bp.ar}}`);
       iframe.src = loadUrl;
     }
 
