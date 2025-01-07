@@ -1,3 +1,4 @@
+/* global odPrimeData */
 ( function () {
 	document.addEventListener( 'DOMContentLoaded', () => {
 		const container = document.getElementById( 'od-prime-app' );
@@ -5,7 +6,8 @@
 			return;
 		}
 
-		const urls = Array.isArray( odPrimeData.urls ) ? odPrimeData.urls : [];
+		const data = odPrimeData?.data ? odPrimeData.data : [];
+		let urls = Array.isArray( data?.urls ) ? data.urls : [];
 		const breakpoints = Array.isArray( odPrimeData.breakpoints )
 			? odPrimeData.breakpoints
 			: [];
@@ -13,6 +15,7 @@
 		// Indices
 		let currentUrlIndex = 0;
 		let currentBreakpointIndex = 0;
+		let currentBatch = 1;
 
 		// Create Buttons
 		const btnStart = document.createElement( 'button' );
@@ -33,6 +36,9 @@
 		btnNextUrl.textContent = 'Next URL';
 		btnNextUrl.disabled = true;
 
+		const btnNextBatch = document.createElement( 'button' );
+		btnNextBatch.textContent = 'Fetch Next Batch';
+
 		const info = document.createElement( 'div' );
 		info.style.marginTop = '10px';
 		info.innerText = 'Click "Start" to begin.';
@@ -49,6 +55,7 @@
 		row1.style.marginBottom = '10px';
 		row1.appendChild( btnStart );
 		row1.appendChild( btnPlay );
+		row1.appendChild( btnNextBatch );
 
 		const row2 = document.createElement( 'div' );
 		row2.style.marginBottom = '10px';
@@ -93,11 +100,11 @@
 			}
 
 			info.innerHTML = `
-        [${ urlStr }]<br/>
-        [${ bpStr }]<br/>
-        [${ detailStr }]<br/>
-        ${ msg || '' }
-      `;
+		[${ urlStr }]<br/>
+		[${ bpStr }]<br/>
+		[${ detailStr }]<br/>
+		${ msg || '' }
+	  `;
 		}
 
 		function loadCurrentIframe() {
@@ -182,15 +189,18 @@
 			if ( 'done_prime' === event.data ) {
 				info.innerHTML += ' … iframe loaded successfully.';
 				if ( autoPlayOn ) {
-					setTimeout( () => {
+					setTimeout( async () => {
 						currentBreakpointIndex++;
 						if ( currentBreakpointIndex >= breakpoints.length ) {
 							currentBreakpointIndex = 0;
 							currentUrlIndex++;
 							if ( currentUrlIndex >= urls.length ) {
-								btnPlay.textContent = 'Auto Play';
-								updateInfoDisplay( 'Auto play finished.' );
-								return;
+								await fetchNextBatch();
+								if ( currentUrlIndex >= urls.length ) {
+									btnPlay.textContent = 'Auto Play';
+									updateInfoDisplay( 'Auto play finished.' );
+									return;
+								}
 							}
 						}
 						loadCurrentIframe();
@@ -200,5 +210,56 @@
 				info.innerHTML += ' … iframe failed to load.';
 			}
 		} );
+
+		btnNextBatch.addEventListener( 'click', fetchNextBatch );
+
+		async function fetchNextBatch() {
+			updateInfoDisplay( `Fetching batch ${ currentBatch }...` );
+			const formData = new FormData();
+			formData.append( 'action', 'od_generate_urls_list' );
+			formData.append( 'provider_index', data.next_provider_index );
+			formData.append( 'subtype_index', data.next_subtype_index );
+			formData.append( 'page_number', data.next_page_number );
+			formData.append(
+				'offset_within_page',
+				data.next_offset_within_page
+			);
+			formData.append( 'batch_size', data.batch_size );
+			formData.append( 'nonce', data.od_next_nonce );
+
+			try {
+				const response = await fetch( '/wp-admin/admin-ajax.php', {
+					method: 'POST',
+					body: formData,
+				} );
+				const result = await response.json();
+
+				if ( result.success ) {
+					info.innerText += `\nBatch ${ currentBatch } completed.`;
+
+					if ( result.data.has_more ) {
+						// Update data for the next batch
+						data.next_provider_index =
+							result.data.next_provider_index;
+						data.next_subtype_index =
+							result.data.next_subtype_index;
+						data.next_page_number = result.data.next_page_number;
+						data.next_offset_within_page =
+							result.data.next_offset_within_page;
+						currentBatch++;
+
+						urls = result.data.urls;
+
+						// Reset the indices
+						currentUrlIndex = 0;
+						currentBreakpointIndex = 0;
+					} else {
+						updateInfoDisplay( 'No more batches available.' );
+					}
+				}
+			} catch ( error ) {
+				updateInfoDisplay( `Error: ${ error.message }` );
+			}
+		}
 	} );
 } )();
