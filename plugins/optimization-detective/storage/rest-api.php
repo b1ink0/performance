@@ -182,7 +182,7 @@ function od_handle_rest_request( WP_REST_Request $request ) {
 		);
 	}
 
-	$data = $request->get_json_params();
+	$data = $request->get_body_params();
 	if ( ! is_array( $data ) ) {
 		return new WP_Error(
 			'missing_array_json_body',
@@ -215,27 +215,6 @@ function od_handle_rest_request( WP_REST_Request $request ) {
 				$e->getMessage()
 			),
 			array( 'status' => 400 )
-		);
-	}
-
-	/*
-	 * The limit for data sent via navigator.sendBeacon() is 64 KiB. This limit is checked in detect.js so that the
-	 * request will not even be attempted if the payload is too large. This server-side restriction is added as a
-	 * safeguard against clients sending possibly malicious payloads much larger than 64 KiB which should never be
-	 * getting sent.
-	 */
-	$max_size       = 64 * 1024;
-	$content_length = strlen( (string) wp_json_encode( $url_metric ) );
-	if ( $content_length > $max_size ) {
-		return new WP_Error(
-			'rest_content_too_large',
-			sprintf(
-				/* translators: 1: the size of the payload, 2: the maximum allowed payload size */
-				__( 'JSON payload size is %1$s bytes which is larger than the maximum allowed size of %2$s bytes.', 'optimization-detective' ),
-				number_format_i18n( $content_length ),
-				number_format_i18n( $max_size )
-			),
-			array( 'status' => 413 )
 		);
 	}
 
@@ -346,3 +325,60 @@ function od_trigger_page_cache_invalidation( int $cache_purge_post_id ): void {
 	/** This action is documented in wp-includes/post.php. */
 	do_action( 'save_post', $post->ID, $post, /* $update */ true );
 }
+
+add_filter(
+	'rest_pre_dispatch',
+	static function ( $result, $server, WP_REST_Request $request ) {
+		// Only run if this is our gzipped JSON payload.
+		$content_type = $request->get_header( 'Content-Type' );
+		if ( 'application/json+gzip' !== $content_type ) {
+			return $result;
+		}
+
+		// Grab the compressed body.
+		$compressed = $request->get_body();
+
+		// Before we parse JSON, check the length of the compressed string.
+		$max_size       = 64 * 1024; // 64 KiB
+		$content_length = strlen( $compressed );
+		if ( $content_length > $max_size ) {
+			return new WP_Error(
+				'rest_content_too_large',
+				sprintf(
+					/* translators: 1: the size of the payload, 2: the maximum allowed payload size */
+					__( 'JSON payload size is %1$s bytes which is larger than the maximum allowed size of %2$s bytes.', 'optimization-detective' ),
+					number_format_i18n( $content_length ),
+					number_format_i18n( $max_size )
+				),
+				array( 'status' => 413 )
+			);
+		}
+
+		$decompressed = gzdecode( $compressed );
+		if ( false === $decompressed ) {
+			return new WP_Error(
+				'rest_invalid_payload',
+				__( 'Unable to decompress the gzip payload.', 'optimization-detective' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		// If it’s under the limit, parse JSON and inject into the request.
+		$decoded = json_decode( $decompressed, true );
+		if ( JSON_ERROR_NONE !== json_last_error() ) {
+			return new WP_Error(
+				'rest_invalid_json',
+				__( 'Invalid JSON in decompressed payload.', 'optimization-detective' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		// Update the request so later handlers see the decompressed JSON.
+		$request->set_body( $decompressed );
+		$request->set_body_params( $decoded );
+
+		return $result;
+	},
+	5,
+	3
+);

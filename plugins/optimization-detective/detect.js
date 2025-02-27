@@ -745,13 +745,42 @@ export default async function detect( {
 	 * Now prepare the URL Metric to be sent as JSON request body.
 	 */
 
+	async function compress( text ) {
+		const encoder = new TextEncoder();
+		const encodedData = encoder.encode( text );
+
+		const compressedStream = new Blob( [ encodedData ] )
+			.stream()
+			.pipeThrough( new CompressionStream( 'gzip' ) );
+
+		const arrayBuffer = await new Response(
+			compressedStream
+		).arrayBuffer();
+		const compressedBlob = new Blob( [ arrayBuffer ], {
+			type: 'application/json+gzip',
+		} );
+
+		const originalSize = encodedData.length;
+		const compressedSize = compressedBlob.size;
+		const compressionRatio = ( compressedSize / originalSize ).toFixed( 2 );
+
+		if ( isDebug ) {
+			log( `Original size: ${ originalSize } bytes` );
+			log( `Compressed size: ${ compressedSize } bytes` );
+			log( `Compression ratio: ${ compressionRatio }` );
+		}
+
+		return compressedBlob;
+	}
+
 	const maxBodyLengthKiB = 64;
 	const maxBodyLengthBytes = maxBodyLengthKiB * 1024;
 
 	// TODO: Consider adding replacer to reduce precision on numbers in DOMRect to reduce payload size.
 	const jsonBody = JSON.stringify( urlMetric );
+	const compressedJsonBody = await compress( jsonBody );
 	const percentOfBudget =
-		( jsonBody.length / ( maxBodyLengthKiB * 1000 ) ) * 100;
+		( compressedJsonBody.size / ( maxBodyLengthKiB * 1000 ) ) * 100;
 
 	/*
 	 * According to the fetch() spec:
@@ -762,7 +791,7 @@ export default async function detect( {
 	if ( jsonBody.length > maxBodyLengthBytes ) {
 		if ( isDebug ) {
 			error(
-				`Unable to send URL Metric because it is ${ jsonBody.length.toLocaleString() } bytes, ${ Math.round(
+				`Unable to send URL Metric because it is ${ compressedJsonBody.size.toLocaleString() } bytes, ${ Math.round(
 					percentOfBudget
 				) }% of ${ maxBodyLengthKiB } KiB limit:`,
 				urlMetric
@@ -782,7 +811,7 @@ export default async function detect( {
 	);
 
 	if ( isDebug ) {
-		const message = `Sending URL Metric (${ jsonBody.length.toLocaleString() } bytes, ${ Math.round(
+		const message = `Sending URL Metric (${ compressedJsonBody.size.toLocaleString() } bytes, ${ Math.round(
 			percentOfBudget
 		) }% of ${ maxBodyLengthKiB } KiB limit):`;
 
@@ -807,12 +836,7 @@ export default async function detect( {
 		);
 	}
 	url.searchParams.set( 'hmac', urlMetricHMAC );
-	navigator.sendBeacon(
-		url,
-		new Blob( [ jsonBody ], {
-			type: 'application/json',
-		} )
-	);
+	navigator.sendBeacon( url, structuredClone( compressedJsonBody ) );
 
 	// Clean up.
 	breadcrumbedElementsMap.clear();
