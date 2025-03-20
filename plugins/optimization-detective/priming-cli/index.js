@@ -6,12 +6,6 @@ import ora from 'ora';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
 
-// Declare the 'success' property on Window interface
-/**
- * @typedef {Object} Window
- * @property {boolean} success - Flag to track if measurement was successful
- */
-
 program
 	.name( 'od-prime' )
 	.description( 'CLI tool to prime URL metrics for Optimization Detective' )
@@ -80,12 +74,6 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 		currentSignal.addEventListener( 'abort', onAbort );
 
 		try {
-			// Before each navigation, reset the success flag.
-			await currentPage.evaluate( () => {
-				// @ts-ignore
-				window.success = false;
-			} );
-
 			const urlToLoad = new URL( task.url );
 			urlToLoad.searchParams.append(
 				'od-verification-token',
@@ -103,9 +91,14 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 				waitUntil: 'load',
 			} );
 
-			// Wait for the success flag to become true (with a 30-second timeout).
-			await currentPage.waitForFunction( 'window.success === true', {
-				timeout: 30000,
+			await currentPage.evaluate( () => {
+				return new Promise( ( requestSuccessResolve ) => {
+					document.addEventListener(
+						'odPrimeUrlMetricsRequestSuccess',
+						requestSuccessResolve,
+						{ once: true }
+					);
+				} );
 			} );
 		} catch ( error ) {
 			reject( error );
@@ -116,29 +109,13 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 	} );
 }
 
+/**
+ * Main function to process all batches.
+ * @return {Promise<void>}
+ */
 async function main() {
 	browser = await puppeteer.launch( { headless: true } );
 	page = await browser.newPage();
-
-	// const slow3G = {
-	// 	offline: false,
-	// 	download: ( 500 * 1024 ) / 8, // converts 500 Kbps to bytes per second
-	// 	upload: ( 500 * 1024 ) / 8,
-	// 	latency: 400, // milliseconds
-	// };
-	// await page.emulateNetworkConditions( slow3G );
-
-	await page.evaluateOnNewDocument( () => {
-		// @ts-ignore
-		window.success = false;
-		window.addEventListener( 'message', ( event ) => {
-			if ( event.data === 'OD_PRIME_URL_METRICS_REQUEST_SUCCESS' ) {
-				// @ts-ignore
-				window.success = true;
-			}
-		} );
-	} );
-
 	let isNextBatchAvailable = true;
 	let cursor = {};
 	let currentBatchNumber = 0;
@@ -149,7 +126,7 @@ async function main() {
 		if ( signal.aborted ) {
 			break;
 		}
-		spinner.start( 'Fetching next batch...' );
+		spinner.text = 'Fetching next batch...';
 		const currentBatch = await getBatch( cursor );
 		// If no URLs remain in the batch, finish processing.
 		if ( ! currentBatch.batch || currentBatch.batch.length === 0 ) {
@@ -159,9 +136,7 @@ async function main() {
 		verificationToken = currentBatch.verificationToken;
 		currentBatchNumber++;
 
-		spinner.succeed(
-			`Batch ${ currentBatchNumber } fetched successfully.`
-		);
+		spinner.text = `Batch ${ currentBatchNumber } fetched successfully.`;
 
 		// Extract token and debug flag from the batch.
 		const currentTasks = flattenBatchToTasks( currentBatch );
@@ -172,48 +147,18 @@ async function main() {
 				break;
 			}
 			const task = currentTasks[ i ];
-			// Record the start time for this task.
-			const taskStartTime = Date.now();
 
-			spinner.start(
-				`Processing task ${ chalk.green(
-					i + 1 + '/' + currentTasks.length
-				) } for ${ chalk.blue( task.url ) } at ${ chalk.blue(
-					task.width + 'x' + task.height
-				) }..`
-			);
+			spinner.text = `Processing task ${ chalk.green(
+				i + 1 + '/' + currentTasks.length
+			) } for ${ chalk.blue( task.url ) } at ${ chalk.blue(
+				task.width + 'x' + task.height
+			) }..`;
 			try {
 				await processTask( page, task, verificationToken, signal );
-				const taskEndTime = Date.now();
-				const timeTakenSeconds = (
-					( taskEndTime - taskStartTime ) /
-					1000
-				).toFixed( 2 );
-				spinner.succeed(
-					`Task ${ chalk.green(
-						i + 1 + '/' + currentTasks.length
-					) } completed successfully in ${ chalk.blue(
-						timeTakenSeconds
-					) } seconds for ${ chalk.blue(
-						task.url
-					) } at ${ chalk.blue( task.width + 'x' + task.height ) }.`
-				);
 			} catch ( error ) {
-				const taskEndTime = Date.now();
-				const timeTakenSeconds = (
-					( taskEndTime - taskStartTime ) /
-					1000
-				).toFixed( 2 );
-				spinner.fail(
-					`Task ${ chalk.green(
-						i + 1 + '/' + currentTasks.length
-					) } failed after ${ chalk.blue(
-						timeTakenSeconds
-					) } seconds for ${ chalk.blue(
-						task.url
-					) } at ${ chalk.blue( task.width + 'x' + task.height ) }.
-					Error: ${ chalk.red( error.message ) }`
-				);
+				spinner.text = `Error processing task ${ i + 1 }. ${
+					error.message
+				}`;
 			}
 		}
 		// Update the cursor to fetch the next batch.
@@ -221,7 +166,7 @@ async function main() {
 	}
 
 	if ( signal.aborted ) {
-		spinner.start( 'Aborted.' );
+		spinner.fail( 'Aborted.' );
 	} else {
 		spinner.succeed( 'All batches processed.' );
 	}

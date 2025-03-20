@@ -499,7 +499,7 @@ export default async function detect( {
 
 	// Wait yet further until idle.
 	if (
-		'' === odPrimeUrlMetricsVerificationToken &&
+		// '' === odPrimeUrlMetricsVerificationToken &&
 		typeof requestIdleCallback === 'function'
 	) {
 		await new Promise( ( resolve ) => {
@@ -903,6 +903,10 @@ export default async function detect( {
 			'*'
 		);
 	}
+
+	document.dispatchEvent(
+		new CustomEvent( 'odPrimeUrlMetricsRequestSuccess' )
+	);
 
 	// Clean up.
 	breadcrumbedElementsMap.clear();
