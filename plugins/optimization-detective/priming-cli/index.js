@@ -86,6 +86,11 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 				height: task.height,
 			} );
 
+			await page.evaluateOnNewDocument( ( token ) => {
+				// @ts-ignore
+				window.__odPrimeUrlMetricsVerificationToken = token;
+			}, verificationToken );
+
 			// Navigate to the URL.
 			await currentPage.goto( urlToLoad.toString(), {
 				waitUntil: 'load',
