@@ -74,12 +74,6 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 		currentSignal.addEventListener( 'abort', onAbort );
 
 		try {
-			const urlToLoad = new URL( task.url );
-			urlToLoad.searchParams.append(
-				'od-verification-token',
-				verificationToken
-			);
-
 			// Set viewport dimensions.
 			await currentPage.setViewport( {
 				width: task.width,
@@ -92,7 +86,7 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 			}, verificationToken );
 
 			// Navigate to the URL.
-			await currentPage.goto( urlToLoad.toString(), {
+			await currentPage.goto( task.url, {
 				waitUntil: 'load',
 			} );
 
