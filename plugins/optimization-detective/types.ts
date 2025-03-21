@@ -95,3 +95,9 @@ export interface Extension {
 	readonly initialize?: InitializeCallback;
 	readonly finalize?: FinalizeCallback;
 }
+
+declare global {
+	interface Window {
+		__odPrimeUrlMetricsVerificationToken: string;
+	}
+}

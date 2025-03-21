@@ -433,10 +433,11 @@ export default async function detect( {
 		odPrimeUrlMetricsVerificationToken =
 			urlPrimeIframeElement.dataset.odPrimeUrlMetricsVerificationToken;
 	}
-	if ( location.search.includes( 'od-verification-token' ) ) {
-		odPrimeUrlMetricsVerificationToken = new URLSearchParams(
-			location.search
-		).get( 'od-verification-token' );
+
+	// Only available when page is loaded by Puppeteer script.
+	if ( win.__odPrimeUrlMetricsVerificationToken ) {
+		odPrimeUrlMetricsVerificationToken =
+			win.__odPrimeUrlMetricsVerificationToken;
 	}
 
 	// Abort if the client already submitted a URL Metric for this URL and viewport group.
