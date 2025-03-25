@@ -906,7 +906,7 @@ export default async function detect( {
 	}
 
 	document.dispatchEvent(
-		new CustomEvent( 'odPrimeUrlMetricsRequestSuccess' )
+		new CustomEvent( 'OD_PRIME_URL_METRICS_REQUEST_SUCCESS' )
 	);
 
 	// Clean up.

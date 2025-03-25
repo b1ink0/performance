@@ -71,7 +71,7 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 		function onAbort() {
 			reject( new Error( 'Task aborted.' ) );
 		}
-		currentSignal.addEventListener( 'abort', onAbort );
+		currentSignal.addEventListener( 'abort', onAbort, { once: true } );
 
 		try {
 			// Set viewport dimensions.
@@ -80,7 +80,7 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 				height: task.height,
 			} );
 
-			await page.evaluateOnNewDocument( ( token ) => {
+			await currentPage.evaluateOnNewDocument( ( token ) => {
 				// @ts-ignore
 				window.__odPrimeUrlMetricsVerificationToken = token;
 			}, verificationToken );
@@ -91,13 +91,27 @@ function processTask( currentPage, task, verificationToken, currentSignal ) {
 			} );
 
 			await currentPage.evaluate( () => {
-				return new Promise( ( requestSuccessResolve ) => {
-					document.addEventListener(
-						'odPrimeUrlMetricsRequestSuccess',
-						requestSuccessResolve,
-						{ once: true }
-					);
-				} );
+				return new Promise(
+					( requestSuccessResolve, requestSuccessReject ) => {
+						// Set timeout for 30 seconds.
+						const timeoutId = setTimeout( () => {
+							requestSuccessReject(
+								new Error(
+									'Timed out waiting for event "OD_PRIME_URL_METRICS_REQUEST_SUCCESS".'
+								)
+							);
+						}, 30000 );
+
+						document.addEventListener(
+							'OD_PRIME_URL_METRICS_REQUEST_SUCCESS',
+							async () => {
+								clearTimeout( timeoutId );
+								requestSuccessResolve();
+							},
+							{ once: true }
+						);
+					}
+				);
 			} );
 		} catch ( error ) {
 			reject( error );
