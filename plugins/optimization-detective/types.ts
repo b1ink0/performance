@@ -104,3 +104,18 @@ export interface Extension {
 	readonly initialize?: InitializeCallback;
 	readonly finalize?: FinalizeCallback;
 }
+
+declare global {
+	interface FetchLaterOptions extends RequestInit {
+		activateAfter: number;
+	}
+
+	interface FetchLaterResult {
+		readonly activated: boolean;
+	}
+
+	function fetchLater(
+		input: RequestInfo | URL,
+		init?: FetchLaterOptions
+	): FetchLaterResult;
+}

@@ -26,6 +26,9 @@
  * @typedef {import("./types.ts").Logger} Logger
  */
 
+// To prevent ESLint from flagging fetchLater and FetchLaterResult as undefined variables.
+/* global fetchLater, FetchLaterResult */
+
 /**
  * Window reference to reduce size when script is minified.
  *
@@ -64,6 +67,39 @@ const storageLockTimeSessionKey = 'odStorageLockTime';
  * @type {number}
  */
 const compressionDebounceWaitDuration = 1000;
+
+/**
+ * Wait duration in milliseconds for debounced calls to queue sending the URL Metric.
+ *
+ * @see {queueSendingUrlMetric}
+ * @type {number}
+ */
+const queueSendingUrlMetricDebounceWaitDuration = 1000;
+
+/**
+ * Abort controller for fetchLater requests used to abort any previously queued request.
+ *
+ * @see {debounceCompressUrlMetric}
+ * @type {?AbortController}
+ */
+let fetchLaterController = null;
+
+/**
+ * FetchLater result object.
+ *
+ * @see {debounceCompressUrlMetric}
+ * @type {?FetchLaterResult}
+ */
+let fetchLaterResult = null;
+
+/**
+ * Wether the fetchLater API is available.
+ *
+ * @see {detect}
+ * @see {debounceCompressUrlMetric}
+ * @type {boolean}
+ */
+const fetchLaterAvailable = typeof fetchLater === 'function';
 
 /**
  * Checks whether storage is locked.
@@ -348,6 +384,7 @@ function extendRootData( properties ) {
 		}
 	}
 	Object.assign( urlMetric, properties );
+	queueSendingUrlMetric();
 	debounceCompressUrlMetric();
 }
 
@@ -411,6 +448,7 @@ function extendElementData( xpath, properties ) {
 	}
 	const elementData = elementsByXPath.get( xpath );
 	Object.assign( elementData, properties );
+	queueSendingUrlMetric();
 	debounceCompressUrlMetric();
 }
 
@@ -504,6 +542,305 @@ function debounceCompressUrlMetric() {
 }
 
 /**
+ * Timeout ID for debounce for queuing sending of the URL Metric.
+ *
+ * @see {queueSendingUrlMetric}
+ * @type {?ReturnType<typeof setTimeout>}
+ */
+let queueSendingUrlMetricTimeout = null;
+
+/**
+ * Handle for requestIdleCallback for URL metric compression.
+ *
+ * @see {debounceCompressUrlMetric}
+ * @type {?number}
+ */
+let queueSendingUrlMetricIdleCallbackHandle = null;
+
+/**
+ * Whether the window was resized.
+ *
+ * @type {boolean}
+ */
+let didWindowResize = false;
+
+/**
+ * Key for sessionStorage to track if the URL Metric was already submitted.
+ *
+ * @type {?string}
+ */
+let alreadySubmittedSessionStorageKey = null;
+
+/**
+ * Map of extension module URLs to extension objects.
+ *
+ * @type {Map<string, Extension>}
+ */
+const extensions = new Map();
+
+/**
+ * Whether the URL Metric sending was aborted.
+ *
+ * @type {boolean}
+ */
+let urlMetricSendingAborted = false;
+
+/**
+ * Queues sending the URL Metric to the REST API using fetchLater with debouncing.
+ */
+async function queueSendingUrlMetric() {
+	if ( ! fetchLaterAvailable || urlMetricSendingAborted ) {
+		return;
+	}
+	if ( null !== queueSendingUrlMetricTimeout ) {
+		clearTimeout( queueSendingUrlMetricTimeout );
+		queueSendingUrlMetricTimeout = null;
+	}
+	if (
+		null !== queueSendingUrlMetricIdleCallbackHandle &&
+		typeof cancelIdleCallback === 'function'
+	) {
+		cancelIdleCallback( queueSendingUrlMetricIdleCallbackHandle );
+		queueSendingUrlMetricIdleCallbackHandle = null;
+	}
+	queueSendingUrlMetricTimeout = setTimeout( async () => {
+		if ( typeof requestIdleCallback === 'function' ) {
+			await new Promise( ( resolve ) => {
+				queueSendingUrlMetricIdleCallbackHandle =
+					requestIdleCallback( resolve );
+			} );
+			queueSendingUrlMetricIdleCallbackHandle = null;
+		}
+
+		if ( null !== fetchLaterResult && fetchLaterResult.activated ) {
+			return;
+		}
+
+		const result = await processUrlMetrics();
+
+		if ( ! result ) {
+			queueSendingUrlMetricTimeout = null;
+			return;
+		}
+
+		const { url, headers, payloadBlob } = result;
+
+		if ( fetchLaterController ) {
+			fetchLaterController.abort();
+		}
+		fetchLaterController = new AbortController();
+		fetchLaterResult = fetchLater( url, {
+			method: 'POST',
+			body: payloadBlob,
+			headers,
+			signal: fetchLaterController.signal,
+			activateAfter: 60 * 60 * 1000, // Activate within 1 hour.
+		} );
+		queueSendingUrlMetricTimeout = null;
+	}, queueSendingUrlMetricDebounceWaitDuration );
+}
+
+/**
+ * URL Metric configuration for sending to the REST API.
+ *
+ * @type {?Object}
+ */
+let queueSendingUrlMetricConfig = null;
+
+/**
+ * Processes the URL Metric and prepares it for sending to the REST API.
+ *
+ * @return {Promise<{url: URL, headers: Object, payloadBlob: Blob}>} - The URL, headers, and payload blob for the request.
+ */
+async function processUrlMetrics() {
+	const {
+		isDebug,
+		restApiEndpoint,
+		restApiNonce,
+		urlMetricSlug,
+		currentETag,
+		cachePurgePostId,
+		urlMetricHMAC,
+		maxUrlMetricSize,
+		logger,
+	} = queueSendingUrlMetricConfig;
+
+	const { log, warn, error } = logger;
+
+	// Only proceed with submitting the URL Metric if viewport stayed the same size. Changing the viewport size (e.g. due
+	// to resizing a window or changing the orientation of a device) will result in unexpected metrics being collected.
+	if ( didWindowResize ) {
+		log( 'Aborting URL Metric collection due to viewport size change.' );
+		urlMetricSendingAborted = true;
+		return;
+	}
+
+	// Finalize extensions.
+	if ( extensions.size > 0 ) {
+		/** @type {Promise[]} */
+		const extensionFinalizePromises = [];
+
+		/** @type {string[]} */
+		const finalizingExtensionModuleUrls = [];
+
+		for ( const [
+			extensionModuleUrl,
+			extension,
+		] of extensions.entries() ) {
+			if ( extension.finalize instanceof Function ) {
+				const extensionLogger = createLogger(
+					isDebug,
+					`[Optimization Detective: ${
+						extension.name ||
+						getExtensionNameFromScriptModuleUrl(
+							extensionModuleUrl
+						)
+					}]`,
+					extensionModuleUrl
+				);
+
+				try {
+					const finalizePromise = extension.finalize( {
+						isDebug,
+						...extensionLogger,
+						getRootData,
+						getElementData,
+						extendElementData,
+						extendRootData,
+					} );
+					if ( finalizePromise instanceof Promise ) {
+						extensionFinalizePromises.push( finalizePromise );
+						finalizingExtensionModuleUrls.push(
+							extensionModuleUrl
+						);
+					}
+				} catch ( err ) {
+					error(
+						`Unable to start finalizing extension '${ extensionModuleUrl }':`,
+						err
+					);
+				}
+			}
+		}
+
+		// Wait for all extensions to finish finalizing.
+		const settledFinalizePromises = await Promise.allSettled(
+			extensionFinalizePromises
+		);
+		for ( const [
+			i,
+			settledFinalizePromise,
+		] of settledFinalizePromises.entries() ) {
+			if ( settledFinalizePromise.status === 'rejected' ) {
+				error(
+					`Failed to finalize extension '${ finalizingExtensionModuleUrls[ i ] }':`,
+					settledFinalizePromise.reason
+				);
+			}
+		}
+	}
+
+	/*
+	 * Now prepare the URL Metric to be sent as JSON request body.
+	 */
+
+	const maxBodyLengthKiB = 64;
+	const maxBodyLengthBytes = maxBodyLengthKiB * 1024;
+
+	const jsonBody = JSON.stringify( urlMetric );
+	if ( jsonBody.length > maxUrlMetricSize ) {
+		error(
+			`URL Metric is ${ jsonBody.length.toLocaleString() } bytes, exceeding the maximum size of ${ maxUrlMetricSize.toLocaleString() } bytes:`,
+			urlMetric
+		);
+		urlMetricSendingAborted = true;
+		return;
+	}
+	compressionEnabled = compressionEnabled && null !== compressedPayload;
+	const payloadBlob = compressionEnabled
+		? compressedPayload
+		: new Blob( [ jsonBody ], { type: 'application/json' } );
+	const percentOfBudget =
+		( payloadBlob.size / ( maxBodyLengthKiB * 1000 ) ) * 100;
+
+	/*
+	 * According to the fetch() spec:
+	 * "If the sum of contentLength and inflightKeepaliveBytes is greater than 64 kibibytes, then return a network error."
+	 * This is what browsers also implement for navigator.sendBeacon(). Therefore, if the size of the JSON is greater
+	 * than the maximum, we should avoid even trying to send it.
+	 */
+	if ( payloadBlob.size > maxBodyLengthBytes ) {
+		error(
+			`Unable to ${
+				fetchLaterAvailable ? 'queue sending' : 'send'
+			} URL Metric because it is ${ payloadBlob.size.toLocaleString() } bytes, ${ Math.round(
+				percentOfBudget
+			) }% of ${ maxBodyLengthKiB } KiB limit:`,
+			urlMetric
+		);
+		urlMetricSendingAborted = true;
+		return;
+	}
+
+	// Even though the server may reject the REST API request, we still have to set the storage lock
+	// because we can't look at the response when sending a beacon.
+	setStorageLock( getCurrentTime() );
+
+	// Remember that the URL Metric was submitted for this URL to avoid having multiple entries submitted by the same client.
+	if ( null !== alreadySubmittedSessionStorageKey ) {
+		sessionStorage.setItem(
+			alreadySubmittedSessionStorageKey,
+			String( getCurrentTime() )
+		);
+	}
+
+	let message = fetchLaterAvailable
+		? 'Queuing Sending Latest URL Metric ('
+		: 'Sending URL Metric (';
+	message += `${ payloadBlob.size.toLocaleString() } bytes`;
+	message += `, ${ Math.round(
+		percentOfBudget
+	) }% of ${ maxBodyLengthKiB } KiB limit`;
+	if ( compressionEnabled ) {
+		message += `, gzip compressed -${ Math.round(
+			( ( jsonBody.length - payloadBlob.size ) / jsonBody.length ) * 100
+		) }%`;
+	} else {
+		message += ', uncompressed';
+	}
+	message += '):';
+
+	if ( percentOfBudget < 50 ) {
+		log( message, urlMetric );
+	} else {
+		warn( message, urlMetric );
+	}
+
+	const url = new URL( restApiEndpoint );
+	if ( typeof restApiNonce === 'string' ) {
+		url.searchParams.set( '_wpnonce', restApiNonce );
+	}
+	url.searchParams.set( 'slug', urlMetricSlug );
+	url.searchParams.set( 'current_etag', currentETag );
+	if ( typeof cachePurgePostId === 'number' ) {
+		url.searchParams.set(
+			'cache_purge_post_id',
+			cachePurgePostId.toString()
+		);
+	}
+	url.searchParams.set( 'hmac', urlMetricHMAC );
+
+	const headers = {
+		'Content-Type': 'application/json',
+	};
+	if ( compressionEnabled ) {
+		headers[ 'Content-Encoding' ] = 'gzip';
+	}
+
+	return { url, headers, payloadBlob };
+}
+
+/**
  * @typedef {{timestamp: number, creationDate: Date}} UrlMetricDebugData
  * @typedef {{groups: Array<{url_metrics: Array<UrlMetricDebugData>}>}} CollectionDebugData
  */
@@ -554,6 +891,17 @@ export default async function detect( {
 	const logger = createLogger( isDebug, consoleLogPrefix );
 	const { log, warn, error } = logger;
 	compressionEnabled = gzdecodeAvailable;
+	queueSendingUrlMetricConfig = {
+		isDebug,
+		restApiEndpoint,
+		restApiNonce,
+		urlMetricSlug,
+		currentETag,
+		cachePurgePostId,
+		urlMetricHMAC,
+		maxUrlMetricSize,
+		logger,
+	};
 
 	if ( isDebug ) {
 		const allUrlMetrics = /** @type Array<UrlMetricDebugData> */ [];
@@ -596,7 +944,7 @@ export default async function detect( {
 	}
 
 	// Abort if the client already submitted a URL Metric for this URL and viewport group.
-	const alreadySubmittedSessionStorageKey =
+	alreadySubmittedSessionStorageKey =
 		await getAlreadySubmittedSessionStorageKey(
 			currentETag,
 			currentUrl,
@@ -670,7 +1018,6 @@ export default async function detect( {
 	}
 
 	// Keep track of whether the window resized. If it resized, we abort sending the URLMetric.
-	let didWindowResize = false;
 	window.addEventListener(
 		'resize',
 		() => {
@@ -830,9 +1177,6 @@ export default async function detect( {
 	 * Initialize extensions.
 	 */
 
-	/** @type {Map<string, Extension>} */
-	const extensions = new Map();
-
 	/** @type {boolean} */
 	let extensionHasFinalize = false;
 
@@ -920,6 +1264,16 @@ export default async function detect( {
 	// Compress the URL Metric once so that even if there are no extensions available or extending the URL Metric, it is compressed.
 	debounceCompressUrlMetric();
 
+	if ( fetchLaterAvailable ) {
+		// Queue the URL Metric once so that even if there are no extensions available or extending the URL Metric, it is queued.
+		queueSendingUrlMetric();
+		return;
+	}
+
+	log(
+		'Fetch Later API not available, falling back to fetch() with keepalive option.'
+	);
+
 	// Wait for the page to be hidden.
 	await new Promise( ( resolve ) => {
 		win.addEventListener( 'pagehide', resolve, { once: true } );
@@ -936,169 +1290,11 @@ export default async function detect( {
 		);
 	} );
 
-	// Only proceed with submitting the URL Metric if viewport stayed the same size. Changing the viewport size (e.g. due
-	// to resizing a window or changing the orientation of a device) will result in unexpected metrics being collected.
-	if ( didWindowResize ) {
-		log( 'Aborting URL Metric collection due to viewport size change.' );
+	const result = await processUrlMetrics();
+	if ( ! result ) {
 		return;
 	}
-
-	// Finalize extensions.
-	if ( extensions.size > 0 ) {
-		/** @type {Promise[]} */
-		const extensionFinalizePromises = [];
-
-		/** @type {string[]} */
-		const finalizingExtensionModuleUrls = [];
-
-		for ( const [
-			extensionModuleUrl,
-			extension,
-		] of extensions.entries() ) {
-			if ( extension.finalize instanceof Function ) {
-				const extensionLogger = createLogger(
-					isDebug,
-					`[Optimization Detective: ${
-						extension.name ||
-						getExtensionNameFromScriptModuleUrl(
-							extensionModuleUrl
-						)
-					}]`,
-					extensionModuleUrl
-				);
-
-				try {
-					const finalizePromise = extension.finalize( {
-						isDebug,
-						...extensionLogger,
-						getRootData,
-						getElementData,
-						extendElementData,
-						extendRootData,
-					} );
-					if ( finalizePromise instanceof Promise ) {
-						extensionFinalizePromises.push( finalizePromise );
-						finalizingExtensionModuleUrls.push(
-							extensionModuleUrl
-						);
-					}
-				} catch ( err ) {
-					error(
-						`Unable to start finalizing extension '${ extensionModuleUrl }':`,
-						err
-					);
-				}
-			}
-		}
-
-		// Wait for all extensions to finish finalizing.
-		const settledFinalizePromises = await Promise.allSettled(
-			extensionFinalizePromises
-		);
-		for ( const [
-			i,
-			settledFinalizePromise,
-		] of settledFinalizePromises.entries() ) {
-			if ( settledFinalizePromise.status === 'rejected' ) {
-				error(
-					`Failed to finalize extension '${ finalizingExtensionModuleUrls[ i ] }':`,
-					settledFinalizePromise.reason
-				);
-			}
-		}
-	}
-
-	/*
-	 * Now prepare the URL Metric to be sent as JSON request body.
-	 */
-
-	const maxBodyLengthKiB = 64;
-	const maxBodyLengthBytes = maxBodyLengthKiB * 1024;
-
-	const jsonBody = JSON.stringify( urlMetric );
-	if ( jsonBody.length > maxUrlMetricSize ) {
-		error(
-			`URL Metric is ${ jsonBody.length.toLocaleString() } bytes, exceeding the maximum size of ${ maxUrlMetricSize.toLocaleString() } bytes:`,
-			urlMetric
-		);
-		return;
-	}
-	compressionEnabled = compressionEnabled && null !== compressedPayload;
-	const payloadBlob = compressionEnabled
-		? compressedPayload
-		: new Blob( [ jsonBody ], { type: 'application/json' } );
-	const percentOfBudget =
-		( payloadBlob.size / ( maxBodyLengthKiB * 1000 ) ) * 100;
-
-	/*
-	 * According to the fetch() spec:
-	 * "If the sum of contentLength and inflightKeepaliveBytes is greater than 64 kibibytes, then return a network error."
-	 * This is what browsers also implement for navigator.sendBeacon(). Therefore, if the size of the JSON is greater
-	 * than the maximum, we should avoid even trying to send it.
-	 */
-	if ( payloadBlob.size > maxBodyLengthBytes ) {
-		error(
-			`Unable to send URL Metric because it is ${ payloadBlob.size.toLocaleString() } bytes, ${ Math.round(
-				percentOfBudget
-			) }% of ${ maxBodyLengthKiB } KiB limit:`,
-			urlMetric
-		);
-		return;
-	}
-
-	// Even though the server may reject the REST API request, we still have to set the storage lock
-	// because we can't look at the response when sending a beacon.
-	setStorageLock( getCurrentTime() );
-
-	// Remember that the URL Metric was submitted for this URL to avoid having multiple entries submitted by the same client.
-	if ( null !== alreadySubmittedSessionStorageKey ) {
-		sessionStorage.setItem(
-			alreadySubmittedSessionStorageKey,
-			String( getCurrentTime() )
-		);
-	}
-
-	let message = 'Sending URL Metric (';
-	message += `${ payloadBlob.size.toLocaleString() } bytes`;
-	message += `, ${ Math.round(
-		percentOfBudget
-	) }% of ${ maxBodyLengthKiB } KiB limit`;
-	if ( compressionEnabled ) {
-		message += `, gzip compressed -${ Math.round(
-			( ( jsonBody.length - payloadBlob.size ) / jsonBody.length ) * 100
-		) }%`;
-	} else {
-		message += ', uncompressed';
-	}
-	message += '):';
-
-	// The threshold of 50% is used because the limit for all beacons combined is 64 KiB, not just the data for one beacon.
-	if ( percentOfBudget < 50 ) {
-		log( message, urlMetric );
-	} else {
-		warn( message, urlMetric );
-	}
-
-	const url = new URL( restApiEndpoint );
-	if ( typeof restApiNonce === 'string' ) {
-		url.searchParams.set( '_wpnonce', restApiNonce );
-	}
-	url.searchParams.set( 'slug', urlMetricSlug );
-	url.searchParams.set( 'current_etag', currentETag );
-	if ( typeof cachePurgePostId === 'number' ) {
-		url.searchParams.set(
-			'cache_purge_post_id',
-			cachePurgePostId.toString()
-		);
-	}
-	url.searchParams.set( 'hmac', urlMetricHMAC );
-
-	const headers = {
-		'Content-Type': 'application/json',
-	};
-	if ( compressionEnabled ) {
-		headers[ 'Content-Encoding' ] = 'gzip';
-	}
+	const { url, headers, payloadBlob } = result;
 
 	const request = new Request( url, {
 		method: 'POST',
