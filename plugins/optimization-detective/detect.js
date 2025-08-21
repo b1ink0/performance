@@ -66,6 +66,30 @@ const storageLockTimeSessionKey = 'odStorageLockTime';
 const compressionDebounceWaitDuration = 1000;
 
 /**
+ * Shared worker instance.
+ *
+ * @type {?SharedWorker}
+ */
+let sharedWorker = null;
+
+/**
+ * Wait duration in milliseconds for debounced calls to queue sending the URL Metric.
+ *
+ * @see {debounceSharedWorkerUrlMetric}
+ * @type {number}
+ */
+const sharedWorkerDebounceWaitDuration = 1000;
+
+/**
+ * Whether the fetchLater API is available.
+ *
+ * @see {detect}
+ * @see {debounceCompressUrlMetric}
+ * @type {boolean}
+ */
+let extendedLifetimeAvailable = false;
+
+/**
  * Checks whether storage is locked.
  *
  * @param {number} currentTime    - Current time in milliseconds.
@@ -348,6 +372,7 @@ function extendRootData( properties ) {
 		}
 	}
 	Object.assign( urlMetric, properties );
+	debounceSharedWorkerUrlMetric();
 	debounceCompressUrlMetric();
 }
 
@@ -411,6 +436,7 @@ function extendElementData( xpath, properties ) {
 	}
 	const elementData = elementsByXPath.get( xpath );
 	Object.assign( elementData, properties );
+	debounceSharedWorkerUrlMetric();
 	debounceCompressUrlMetric();
 }
 
@@ -468,7 +494,7 @@ let compressionEnabled = true;
  * Debounces the compression of the URL Metric.
  */
 function debounceCompressUrlMetric() {
-	if ( ! compressionEnabled ) {
+	if ( ! compressionEnabled || extendedLifetimeAvailable ) {
 		return;
 	}
 	if ( null !== recompressionTimeout ) {
@@ -504,6 +530,322 @@ function debounceCompressUrlMetric() {
 }
 
 /**
+ * Timeout ID for debounce for queuing sending of the URL Metric.
+ *
+ * @see {debounceSharedWorkerUrlMetric}
+ * @type {?ReturnType<typeof setTimeout>}
+ */
+let sharedWorkerTimeout = null;
+
+/**
+ * Handle for requestIdleCallback for URL metric compression.
+ *
+ * @see {debounceCompressUrlMetric}
+ * @type {?number}
+ */
+let sharedWorkerIdleCallbackHandle = null;
+
+/**
+ * Whether the window was resized.
+ *
+ * @type {boolean}
+ */
+let didWindowResize = false;
+
+/**
+ * Key for sessionStorage to track if the URL Metric was already submitted.
+ *
+ * @type {?string}
+ */
+let alreadySubmittedSessionStorageKey = null;
+
+/**
+ * Map of extension module URLs to extension objects.
+ *
+ * @type {Map<string, Extension>}
+ */
+const extensions = new Map();
+
+/**
+ * Whether the URL Metric sending was aborted.
+ *
+ * @type {boolean}
+ */
+let urlMetricSendingAborted = false;
+
+/**
+ * Queues sending the URL Metric to the shared worker.
+ */
+async function debounceSharedWorkerUrlMetric() {
+	if ( ! extendedLifetimeAvailable || urlMetricSendingAborted ) {
+		return;
+	}
+	if ( null !== sharedWorkerTimeout ) {
+		clearTimeout( sharedWorkerTimeout );
+		sharedWorkerTimeout = null;
+	}
+	if (
+		null !== sharedWorkerIdleCallbackHandle &&
+		typeof cancelIdleCallback === 'function'
+	) {
+		cancelIdleCallback( sharedWorkerIdleCallbackHandle );
+		sharedWorkerIdleCallbackHandle = null;
+	}
+	sharedWorkerTimeout = setTimeout( async () => {
+		if ( typeof requestIdleCallback === 'function' ) {
+			await new Promise( ( resolve ) => {
+				sharedWorkerIdleCallbackHandle = requestIdleCallback( resolve );
+			} );
+			sharedWorkerIdleCallbackHandle = null;
+		}
+
+		const result = await processUrlMetrics();
+
+		if ( ! result ) {
+			sharedWorkerTimeout = null;
+			return;
+		}
+
+		const { logger, ...sharedWorkerUrlMetricConfig } = urlMetricUrlConfig;
+
+		sharedWorker.port.postMessage( {
+			type: 'metrics',
+			url: win.location.href,
+			metrics: {
+				urlMetric,
+				urlMetricUrlConfig: sharedWorkerUrlMetricConfig,
+			},
+		} );
+		sharedWorkerTimeout = null;
+	}, sharedWorkerDebounceWaitDuration );
+}
+
+/**
+ * Gets the Chrome version.
+ * @return {number} Chrome version or null if not found.
+ */
+function getChromiumVersion() {
+	const userAgent = navigator.userAgent;
+	const chromeMatch = userAgent.match( /Chrome\/(\d+)/ );
+	return chromeMatch ? parseInt( chromeMatch[ 1 ] ) : null;
+}
+
+/**
+ * URL Metric configuration for sending to the REST API.
+ *
+ * @type {?Object}
+ */
+let urlMetricUrlConfig = null;
+
+/**
+ * Processes the URL Metric and prepares it for sending to the REST API.
+ *
+ * @return {Promise<{url: URL, headers: Object, payloadBlob: Blob}|true>} - The URL, headers, and payload blob for the request.
+ */
+async function processUrlMetrics() {
+	const {
+		isDebug,
+		restApiEndpoint,
+		restApiNonce,
+		urlMetricSlug,
+		currentETag,
+		cachePurgePostId,
+		urlMetricHMAC,
+		maxUrlMetricSize,
+		logger,
+	} = urlMetricUrlConfig;
+
+	const { log, warn, error } = logger;
+
+	// Only proceed with submitting the URL Metric if viewport stayed the same size. Changing the viewport size (e.g. due
+	// to resizing a window or changing the orientation of a device) will result in unexpected metrics being collected.
+	if ( didWindowResize ) {
+		log( 'Aborting URL Metric collection due to viewport size change.' );
+		urlMetricSendingAborted = true;
+		return;
+	}
+
+	// Finalize extensions.
+	if ( extensions.size > 0 ) {
+		/** @type {Promise[]} */
+		const extensionFinalizePromises = [];
+
+		/** @type {string[]} */
+		const finalizingExtensionModuleUrls = [];
+
+		for ( const [
+			extensionModuleUrl,
+			extension,
+		] of extensions.entries() ) {
+			if ( extension.finalize instanceof Function ) {
+				const extensionLogger = createLogger(
+					isDebug,
+					`[Optimization Detective: ${
+						extension.name ||
+						getExtensionNameFromScriptModuleUrl(
+							extensionModuleUrl
+						)
+					}]`,
+					extensionModuleUrl
+				);
+
+				try {
+					const finalizePromise = extension.finalize( {
+						isDebug,
+						...extensionLogger,
+						getRootData,
+						getElementData,
+						extendElementData,
+						extendRootData,
+					} );
+					if ( finalizePromise instanceof Promise ) {
+						extensionFinalizePromises.push( finalizePromise );
+						finalizingExtensionModuleUrls.push(
+							extensionModuleUrl
+						);
+					}
+				} catch ( err ) {
+					error(
+						`Unable to start finalizing extension '${ extensionModuleUrl }':`,
+						err
+					);
+				}
+			}
+		}
+
+		// Wait for all extensions to finish finalizing.
+		const settledFinalizePromises = await Promise.allSettled(
+			extensionFinalizePromises
+		);
+		for ( const [
+			i,
+			settledFinalizePromise,
+		] of settledFinalizePromises.entries() ) {
+			if ( settledFinalizePromise.status === 'rejected' ) {
+				error(
+					`Failed to finalize extension '${ finalizingExtensionModuleUrls[ i ] }':`,
+					settledFinalizePromise.reason
+				);
+			}
+		}
+	}
+
+	if ( extendedLifetimeAvailable ) {
+		// Even though the server may reject the REST API request, we still have to set the storage lock
+		// because we can't look at the response when sending a beacon.
+		setStorageLock( getCurrentTime() );
+
+		// Remember that the URL Metric was submitted for this URL to avoid having multiple entries submitted by the same client.
+		if ( null !== alreadySubmittedSessionStorageKey ) {
+			sessionStorage.setItem(
+				alreadySubmittedSessionStorageKey,
+				String( getCurrentTime() )
+			);
+		}
+		return true;
+	}
+
+	/*
+	 * Now prepare the URL Metric to be sent as JSON request body.
+	 */
+
+	const maxBodyLengthKiB = 64;
+	const maxBodyLengthBytes = maxBodyLengthKiB * 1024;
+
+	const jsonBody = JSON.stringify( urlMetric );
+	if ( jsonBody.length > maxUrlMetricSize ) {
+		error(
+			`URL Metric is ${ jsonBody.length.toLocaleString() } bytes, exceeding the maximum size of ${ maxUrlMetricSize.toLocaleString() } bytes:`,
+			urlMetric
+		);
+		urlMetricSendingAborted = true;
+		return;
+	}
+	compressionEnabled = compressionEnabled && null !== compressedPayload;
+	const payloadBlob = compressionEnabled
+		? compressedPayload
+		: new Blob( [ jsonBody ], { type: 'application/json' } );
+	const percentOfBudget =
+		( payloadBlob.size / ( maxBodyLengthKiB * 1000 ) ) * 100;
+
+	/*
+	 * According to the fetch() spec:
+	 * "If the sum of contentLength and inflightKeepaliveBytes is greater than 64 kibibytes, then return a network error."
+	 * This is what browsers also implement for navigator.sendBeacon(). Therefore, if the size of the JSON is greater
+	 * than the maximum, we should avoid even trying to send it.
+	 */
+	if ( payloadBlob.size > maxBodyLengthBytes ) {
+		error(
+			`Unable to ${
+				extendedLifetimeAvailable ? 'queue sending' : 'send'
+			} URL Metric because it is ${ payloadBlob.size.toLocaleString() } bytes, ${ Math.round(
+				percentOfBudget
+			) }% of ${ maxBodyLengthKiB } KiB limit:`,
+			urlMetric
+		);
+		urlMetricSendingAborted = true;
+		return;
+	}
+
+	// Even though the server may reject the REST API request, we still have to set the storage lock
+	// because we can't look at the response when sending a beacon.
+	setStorageLock( getCurrentTime() );
+
+	// Remember that the URL Metric was submitted for this URL to avoid having multiple entries submitted by the same client.
+	if ( null !== alreadySubmittedSessionStorageKey ) {
+		sessionStorage.setItem(
+			alreadySubmittedSessionStorageKey,
+			String( getCurrentTime() )
+		);
+	}
+
+	let message = extendedLifetimeAvailable
+		? 'Queuing Sending Latest URL Metric ('
+		: 'Sending URL Metric (';
+	message += `${ payloadBlob.size.toLocaleString() } bytes`;
+	message += `, ${ Math.round(
+		percentOfBudget
+	) }% of ${ maxBodyLengthKiB } KiB limit`;
+	if ( compressionEnabled ) {
+		message += `, gzip compressed -${ Math.round(
+			( ( jsonBody.length - payloadBlob.size ) / jsonBody.length ) * 100
+		) }%`;
+	} else {
+		message += ', uncompressed';
+	}
+	message += '):';
+
+	if ( percentOfBudget < 50 ) {
+		log( message, urlMetric );
+	} else {
+		warn( message, urlMetric );
+	}
+
+	const url = new URL( restApiEndpoint );
+	if ( typeof restApiNonce === 'string' ) {
+		url.searchParams.set( '_wpnonce', restApiNonce );
+	}
+	url.searchParams.set( 'slug', urlMetricSlug );
+	url.searchParams.set( 'current_etag', currentETag );
+	if ( typeof cachePurgePostId === 'number' ) {
+		url.searchParams.set(
+			'cache_purge_post_id',
+			cachePurgePostId.toString()
+		);
+	}
+	url.searchParams.set( 'hmac', urlMetricHMAC );
+
+	const headers = {
+		'Content-Type': 'application/json',
+	};
+	if ( compressionEnabled ) {
+		headers[ 'Content-Encoding' ] = 'gzip';
+	}
+
+	return { url, headers, payloadBlob };
+}
+
+/**
  * @typedef {{timestamp: number, creationDate: Date}} UrlMetricDebugData
  * @typedef {{groups: Array<{url_metrics: Array<UrlMetricDebugData>}>}} CollectionDebugData
  */
@@ -530,6 +872,7 @@ function debounceCompressUrlMetric() {
  * @param {number}                 args.freshnessTTL               - The freshness age (TTL) for a given URL Metric.
  * @param {string}                 args.webVitalsLibrarySrc        - The URL for the web-vitals library.
  * @param {CollectionDebugData}    [args.urlMetricGroupCollection] - URL Metric group collection, when in debug mode.
+ * @param {string}                 args.sharedWorkerUrl            - URL for the shared worker script.
  */
 export default async function detect( {
 	minViewportAspectRatio,
@@ -550,10 +893,26 @@ export default async function detect( {
 	freshnessTTL,
 	webVitalsLibrarySrc,
 	urlMetricGroupCollection,
+	sharedWorkerUrl,
 } ) {
 	const logger = createLogger( isDebug, consoleLogPrefix );
 	const { log, warn, error } = logger;
-	compressionEnabled = gzdecodeAvailable;
+	const chromiumVersion = getChromiumVersion();
+	extendedLifetimeAvailable =
+		null !== chromiumVersion && chromiumVersion >= 139;
+	compressionEnabled = extendedLifetimeAvailable ? false : gzdecodeAvailable;
+	urlMetricUrlConfig = {
+		isDebug,
+		restApiEndpoint,
+		restApiNonce,
+		urlMetricSlug,
+		currentETag,
+		cachePurgePostId,
+		urlMetricHMAC,
+		maxUrlMetricSize,
+		logger,
+		gzdecodeAvailable,
+	};
 
 	if ( isDebug ) {
 		const allUrlMetrics = /** @type Array<UrlMetricDebugData> */ [];
@@ -596,7 +955,7 @@ export default async function detect( {
 	}
 
 	// Abort if the client already submitted a URL Metric for this URL and viewport group.
-	const alreadySubmittedSessionStorageKey =
+	alreadySubmittedSessionStorageKey =
 		await getAlreadySubmittedSessionStorageKey(
 			currentETag,
 			currentUrl,
@@ -670,7 +1029,6 @@ export default async function detect( {
 	}
 
 	// Keep track of whether the window resized. If it was resized, we abort sending the URLMetric.
-	let didWindowResize = false;
 	win.addEventListener(
 		'resize',
 		() => {
@@ -830,9 +1188,6 @@ export default async function detect( {
 	 * Initialize extensions.
 	 */
 
-	/** @type {Map<string, Extension>} */
-	const extensions = new Map();
-
 	/** @type {boolean} */
 	let extensionHasFinalize = false;
 
@@ -920,191 +1275,96 @@ export default async function detect( {
 	// Compress the URL Metric once so that even if there are no extensions available or extending the URL Metric, it is compressed.
 	debounceCompressUrlMetric();
 
-	// Wait for the page to be hidden.
-	await new Promise( ( resolve ) => {
-		win.addEventListener( 'pagehide', resolve, { once: true } );
-		win.addEventListener( 'pageswap', resolve, { once: true } );
+	if ( extendedLifetimeAvailable ) {
+		const pageUrl = window.location.href;
+		let port = null;
+
+		// Create SharedWorker connection
+		sharedWorker = new SharedWorker( sharedWorkerUrl, {
+			name: 'Optimization Detective',
+			type: 'module',
+			// @ts-ignore
+			extendedLifetime: true,
+		} );
+
+		port = sharedWorker.port;
+
+		// Handle messages from SharedWorker
+		port.onmessage = function ( e ) {
+			const data = e.data;
+
+			if ( data.type === 'registered' ) {
+				log(
+					`Client registered with SharedWorker for URL: ${ data.url }`
+				);
+			} else if ( data.type === 'heartbeat' ) {
+				// SharedWorker is asking for heartbeat - respond immediately
+				log( `Heartbeat request received from SharedWorker` );
+				port.postMessage( { type: 'heartbeat_ack', url: pageUrl } );
+			} else if ( data.type === 'metrics_ack' ) {
+				log( `Metrics ACK received` );
+			}
+		};
+
+		port.start();
+
+		// Register client with its URL
+		port.postMessage( { type: 'register', url: pageUrl } );
+
+		function unregister() {
+			debounceSharedWorkerUrlMetric();
+			port.postMessage( { type: 'unregister', url: pageUrl } );
+			port.close();
+		}
+
+		win.addEventListener( 'beforeunload', unregister );
+		win.addEventListener( 'pagehide', unregister, { once: true } );
+		win.addEventListener( 'pageswap', unregister, { once: true } );
 		doc.addEventListener(
 			'visibilitychange',
 			() => {
 				if ( doc.visibilityState === 'hidden' ) {
-					// TODO: This will fire even when switching tabs.
-					resolve();
+					unregister();
 				}
 			},
 			{ once: true }
 		);
-	} );
 
-	// Only proceed with submitting the URL Metric if the viewport stayed the same size. Changing the viewport size (e.g. due
-	// to resizing a window or changing the orientation of a device) will result in unexpected metrics being collected.
-	if ( didWindowResize ) {
-		log( 'Aborting URL Metric collection due to viewport size change.' );
-		return;
-	}
+		// Queue the URL Metric once so that even if there are no extensions available or extending the URL Metric, it is queued.
+		debounceSharedWorkerUrlMetric();
+	} else {
+		log(
+			'Extended Lifetime not available, falling back to fetch() with keepalive option.'
+		);
 
-	// Finalize extensions.
-	if ( extensions.size > 0 ) {
-		/** @type {Promise[]} */
-		const extensionFinalizePromises = [];
-
-		/** @type {string[]} */
-		const finalizingExtensionModuleUrls = [];
-
-		for ( const [
-			extensionModuleUrl,
-			extension,
-		] of extensions.entries() ) {
-			if ( extension.finalize instanceof Function ) {
-				const extensionLogger = createLogger(
-					isDebug,
-					`[Optimization Detective: ${
-						extension.name ||
-						getExtensionNameFromScriptModuleUrl(
-							extensionModuleUrl
-						)
-					}]`,
-					extensionModuleUrl
-				);
-
-				try {
-					const finalizePromise = extension.finalize( {
-						isDebug,
-						...extensionLogger,
-						getRootData,
-						getElementData,
-						extendElementData,
-						extendRootData,
-					} );
-					if ( finalizePromise instanceof Promise ) {
-						extensionFinalizePromises.push( finalizePromise );
-						finalizingExtensionModuleUrls.push(
-							extensionModuleUrl
-						);
+		// Wait for the page to be hidden.
+		await new Promise( ( resolve ) => {
+			win.addEventListener( 'pagehide', resolve, { once: true } );
+			win.addEventListener( 'pageswap', resolve, { once: true } );
+			doc.addEventListener(
+				'visibilitychange',
+				() => {
+					if ( document.visibilityState === 'hidden' ) {
+						// TODO: This will fire even when switching tabs.
+						resolve();
 					}
-				} catch ( err ) {
-					error(
-						`Unable to start finalizing extension '${ extensionModuleUrl }':`,
-						err
-					);
-				}
-			}
+				},
+				{ once: true }
+			);
+		} );
+
+		const result = await processUrlMetrics();
+		if ( ! result || true === result ) {
+			return;
 		}
+		const { url, headers, payloadBlob } = result;
 
-		// Wait for all extensions to finish finalizing.
-		const settledFinalizePromises = await Promise.allSettled(
-			extensionFinalizePromises
-		);
-		for ( const [
-			i,
-			settledFinalizePromise,
-		] of settledFinalizePromises.entries() ) {
-			if ( settledFinalizePromise.status === 'rejected' ) {
-				error(
-					`Failed to finalize extension '${ finalizingExtensionModuleUrls[ i ] }':`,
-					settledFinalizePromise.reason
-				);
-			}
-		}
+		const request = new Request( url, {
+			method: 'POST',
+			body: payloadBlob,
+			headers,
+			keepalive: true, // This makes fetch() behave the same as navigator.sendBeacon().
+		} );
+		await fetch( request );
 	}
-
-	/*
-	 * Now prepare the URL Metric to be sent in the JSON request body.
-	 */
-
-	const maxBodyLengthKiB = 64;
-	const maxBodyLengthBytes = maxBodyLengthKiB * 1024;
-
-	const jsonBody = JSON.stringify( urlMetric );
-	if ( jsonBody.length > maxUrlMetricSize ) {
-		error(
-			`URL Metric is ${ jsonBody.length.toLocaleString() } bytes, exceeding the maximum size of ${ maxUrlMetricSize.toLocaleString() } bytes:`,
-			urlMetric
-		);
-		return;
-	}
-	compressionEnabled = compressionEnabled && null !== compressedPayload;
-	const payloadBlob = compressionEnabled
-		? compressedPayload
-		: new Blob( [ jsonBody ], { type: 'application/json' } );
-	const percentOfBudget =
-		( payloadBlob.size / ( maxBodyLengthKiB * 1000 ) ) * 100;
-
-	/*
-	 * According to the fetch() spec:
-	 * "If the sum of contentLength and inflightKeepaliveBytes is greater than 64 kibibytes, then return a network error."
-	 * This is what browsers also implement for navigator.sendBeacon(). Therefore, if the size of the JSON is greater
-	 * than the maximum, we should avoid even trying to send it.
-	 */
-	if ( payloadBlob.size > maxBodyLengthBytes ) {
-		error(
-			`Unable to send URL Metric because it is ${ payloadBlob.size.toLocaleString() } bytes, ${ Math.round(
-				percentOfBudget
-			) }% of ${ maxBodyLengthKiB } KiB limit:`,
-			urlMetric
-		);
-		return;
-	}
-
-	// Even though the server may reject the REST API request, we still have to set the storage lock
-	// because we can't look at the response when sending a beacon.
-	setStorageLock( getCurrentTime() );
-
-	// Remember that the URL Metric was submitted for this URL to avoid having multiple entries submitted by the same client.
-	if ( null !== alreadySubmittedSessionStorageKey ) {
-		sessionStorage.setItem(
-			alreadySubmittedSessionStorageKey,
-			String( getCurrentTime() )
-		);
-	}
-
-	let message = 'Sending URL Metric (';
-	message += `${ payloadBlob.size.toLocaleString() } bytes`;
-	message += `, ${ Math.round(
-		percentOfBudget
-	) }% of ${ maxBodyLengthKiB } KiB limit`;
-	if ( compressionEnabled ) {
-		message += `, gzip compressed -${ Math.round(
-			( ( jsonBody.length - payloadBlob.size ) / jsonBody.length ) * 100
-		) }%`;
-	} else {
-		message += ', uncompressed';
-	}
-	message += '):';
-
-	// The threshold of 50% is used because the limit for all beacons combined is 64 KiB, not just the data for one beacon.
-	if ( percentOfBudget < 50 ) {
-		log( message, urlMetric );
-	} else {
-		warn( message, urlMetric );
-	}
-
-	const url = new URL( restApiEndpoint );
-	if ( typeof restApiNonce === 'string' ) {
-		url.searchParams.set( '_wpnonce', restApiNonce );
-	}
-	url.searchParams.set( 'slug', urlMetricSlug );
-	url.searchParams.set( 'current_etag', currentETag );
-	if ( typeof cachePurgePostId === 'number' ) {
-		url.searchParams.set(
-			'cache_purge_post_id',
-			cachePurgePostId.toString()
-		);
-	}
-	url.searchParams.set( 'hmac', urlMetricHMAC );
-
-	const headers = {
-		'Content-Type': 'application/json',
-	};
-	if ( compressionEnabled ) {
-		headers[ 'Content-Encoding' ] = 'gzip';
-	}
-
-	const request = new Request( url, {
-		method: 'POST',
-		body: payloadBlob,
-		headers,
-		keepalive: true, // This makes fetch() behave the same as navigator.sendBeacon().
-	} );
-	await fetch( request );
 }

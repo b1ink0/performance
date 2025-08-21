@@ -141,6 +141,7 @@ function od_get_detection_script( string $slug, OD_URL_Metric_Group_Collection $
 		'webVitalsLibrarySrc'    => $web_vitals_lib_src,
 		'gzdecodeAvailable'      => $gzdecode_available,
 		'maxUrlMetricSize'       => od_get_maximum_url_metric_size(),
+		'sharedWorkerUrl'        => plugins_url( add_query_arg( 'ver', OPTIMIZATION_DETECTIVE_VERSION, od_get_asset_path( 'shared-worker.js' ) ), __FILE__ ),
 	);
 	if ( is_user_logged_in() ) {
 		$detect_args['restApiNonce'] = wp_create_nonce( 'wp_rest' );
