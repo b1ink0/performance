@@ -415,6 +415,29 @@ function extendElementData( xpath, properties ) {
 }
 
 /**
+ * Captures the styles of a DOM element.
+ *
+ * @param {string}        xpath           - The XPath of the element to capture styles from.
+ * @param {Element}       element         - The DOM element to capture styles from.
+ * @param {Array<string>} styleProperties - The CSS properties to capture.
+ */
+function captureElementStyles( xpath, element, styleProperties ) {
+	if ( ! elementsByXPath.has( xpath ) ) {
+		return;
+	}
+
+	const computedStyle = window.getComputedStyle( element );
+	const styles = {};
+	for ( const property of styleProperties ) {
+		styles[ property ] = computedStyle.getPropertyValue( property );
+	}
+
+	const elementData = elementsByXPath.get( xpath );
+	Object.assign( elementData, { computedStyles: styles } );
+	debounceCompressUrlMetric();
+}
+
+/**
  * Compresses a JSON string using CompressionStream API.
  *
  * @param {string} jsonString - JSON string to compress.
@@ -871,6 +894,7 @@ export default async function detect( {
 					extendRootData,
 					getElementData,
 					extendElementData,
+					captureElementStyles,
 				} );
 				if ( initializePromise instanceof Promise ) {
 					extensionInitializePromises.push( initializePromise );

@@ -17,6 +17,7 @@ export interface ElementData {
 	intersectionRatio: number;
 	intersectionRect: DOMRectReadOnly;
 	boundingClientRect: DOMRectReadOnly;
+	computedStyles?: { [ property: string ]: string | null };
 }
 
 export type ExtendedElementData = ExcludeProps< ElementData >;
@@ -65,6 +66,11 @@ export type ExtendElementDataFunction = (
 	xpath: string,
 	properties: ExtendedElementData
 ) => void;
+export type CaptureElementStylesFunction = (
+	xpath: string,
+	element: Element,
+	styleProperties: string[]
+) => void;
 
 export type InitializeArgs = {
 	readonly isDebug: boolean;
@@ -81,6 +87,7 @@ export type InitializeArgs = {
 	readonly extendRootData: ExtendRootDataFunction;
 	readonly getElementData: GetElementDataFunction;
 	readonly extendElementData: ExtendElementDataFunction;
+	readonly captureElementStyles: CaptureElementStylesFunction;
 };
 
 export type InitializeCallback = ( args: InitializeArgs ) => Promise< void >;

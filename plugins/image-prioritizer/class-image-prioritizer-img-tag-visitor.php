@@ -189,6 +189,8 @@ final class Image_Prioritizer_Img_Tag_Visitor extends Image_Prioritizer_Tag_Visi
 			);
 		}
 
+		$processor->set_meta_attribute( 'style-capture', implode( ',', array_keys( image_prioritizer_element_item_schema_properties() ) ) );
+
 		return true;
 	}
 
