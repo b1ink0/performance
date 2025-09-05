@@ -52,6 +52,7 @@ function image_prioritizer_init( string $optimization_detective_version ): void 
 	add_filter( 'od_extension_module_urls', 'image_prioritizer_filter_extension_module_urls' );
 	add_filter( 'od_url_metric_schema_root_additional_properties', 'image_prioritizer_add_root_schema_properties' );
 	add_filter( 'rest_request_before_callbacks', 'image_prioritizer_filter_rest_request_before_callbacks', 10, 3 );
+	add_filter( 'od_url_metric_schema_element_item_additional_properties', 'image_prioritizer_add_element_item_schema_properties' );
 }
 
 /**
@@ -151,6 +152,82 @@ function image_prioritizer_add_root_schema_properties( $additional_properties ):
 		),
 	);
 	return $additional_properties;
+}
+
+/**
+ * Adds additional properties to the element item schema for image prioritizer.
+ *
+ * @since n.e.x.t
+ * @access private
+ *
+ * @param array<string, array{type: string}>|mixed $additional_properties Additional properties.
+ * @return array<string, array{type: string}> Additional properties.
+ */
+function image_prioritizer_add_element_item_schema_properties( $additional_properties ): array {
+	if ( ! is_array( $additional_properties ) ) {
+		$additional_properties = array();
+	}
+
+	$additional_properties['computedStyles'] = array(
+		'type'       => 'object',
+		'properties' => image_prioritizer_element_item_schema_properties( array( 'type', 'enum', 'required', 'pattern' ) ),
+	);
+	return $additional_properties;
+}
+
+/**
+ * Returns the schema properties for an element item.
+ *
+ * @since n.e.x.t
+ * @access private
+ * @param  array<string> $allowed_keys Allowed keys.
+ * @return array<string, mixed> Schema properties.
+ */
+function image_prioritizer_element_item_schema_properties( array $allowed_keys ): array {
+	$properties = array(
+		'visibility'         => array(
+			'type'      => 'string',
+			'enum'      => array( 'collapse', 'hidden', 'visible' ),
+			'required'  => true,
+			'behavior'  => 'DESCENDANT_INHERIT_OVERRIDE',
+			'stopValue' => array(),
+		),
+		'display'            => array(
+			'type'      => 'string',
+			'enum'      => array( 'block', 'inline', 'flex', 'grid', 'none' ),
+			'required'  => true,
+			'behavior'  => 'ANCESTOR_SPECIFIC_OVERRIDE',
+			'stopValue' => array( 'none' ),
+		),
+		'opacity'            => array(
+			'type'      => 'string',
+			'pattern'   => '^(0|1|0?\.[0-9]+)$',
+			'required'  => true,
+			'behavior'  => 'ANCESTOR_SPECIFIC_OVERRIDE',
+			'stopValue' => array( '0' ),
+		),
+		'content-visibility' => array(
+			'type'      => 'string',
+			'enum'      => array( 'visible', 'hidden', 'auto' ),
+			'required'  => true,
+			'behavior'  => 'ANCESTOR_SPECIFIC_OVERRIDE',
+			// later the value in array more its priority.
+			// JavaScript will try to find the nearest ancestor with `content-visibility` set to 'auto'.
+			// It will then continue traversing up the DOM until it finds `content-visibility` set
+			// to 'hidden'. If none is found, 'auto' will be used; otherwise, 'hidden' will be used.
+			'stopValue' => array( 'auto', 'hidden' ),
+		),
+	);
+
+	$filtered_properties = array();
+	foreach ( $properties as $property_name => $property_config ) {
+		$filtered_properties[ $property_name ] = array_intersect_key(
+			$property_config,
+			array_flip( $allowed_keys )
+		);
+	}
+
+	return $filtered_properties;
 }
 
 /**

@@ -27,10 +27,40 @@ export const name = 'Image Prioritizer';
  * @type {InitializeCallback}
  * @param {InitializeArgs} args Args.
  */
-export async function initialize( { log, onLCP, extendRootData } ) {
+export async function initialize( {
+	log,
+	onLCP,
+	extendRootData,
+	captureElementStyles,
+} ) {
 	onLCP(
-		( metric ) => {
+		async ( metric ) => {
 			handleLCPMetric( metric, extendRootData, log );
+
+			if ( typeof requestIdleCallback === 'function' ) {
+				await new Promise( ( resolve ) => {
+					requestIdleCallback( resolve );
+				} );
+			}
+
+			requestAnimationFrame( () => {
+				const imgElements =
+					document.body.querySelectorAll( 'img[data-od-xpath]' );
+				for ( const imgElement of imgElements ) {
+					if ( imgElement.hasAttribute( 'data-od-style-capture' ) ) {
+						const styleProperties = JSON.parse(
+							imgElement.getAttribute( 'data-od-style-capture' )
+						);
+						if ( styleProperties ) {
+							captureElementStyles(
+								imgElement.getAttribute( 'data-od-xpath' ),
+								imgElement,
+								styleProperties
+							);
+						}
+					}
+				}
+			} );
 		},
 		{
 			// This avoids needing to click to finalize LCP candidate. While this is helpful for testing, it also

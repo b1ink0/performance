@@ -415,6 +415,77 @@ function extendElementData( xpath, properties ) {
 }
 
 /**
+ * Captures the styles of a DOM element.
+ *
+ * @param {string}                                             xpath           - The XPath of the element to capture styles from.
+ * @param {Element}                                            element         - The DOM element to capture styles from.
+ * @param {Object<string,Object<string,string|Array<string>>>} styleProperties - The CSS properties to capture.
+ */
+function captureElementStyles( xpath, element, styleProperties ) {
+	if ( ! elementsByXPath.has( xpath ) ) {
+		return;
+	}
+
+	const styles = {};
+	for ( const property of Object.keys( styleProperties ) ) {
+		let currentElement = element;
+		const behavior = styleProperties[ property ].behavior ?? '';
+		const stopValue = styleProperties[ property ].stopValue ?? [];
+		// This case is for CSS properties like `visibility`, which are inherited by descendants.
+		// However, if a descendant defines a different value, it will override the inherited one and be used instead.
+		if ( behavior === 'DESCENDANT_INHERIT_OVERRIDE' ) {
+			// This same case probably includes non-inheritable properties like `margin` and `padding`, which are correctly returned by `getComputedStyle`.
+			styles[ property ] = window
+				.getComputedStyle( currentElement )
+				.getPropertyValue( property );
+			// This case is for CSS properties like `display` (specifically when the value is `none`).
+			// It needs to be handled this way because if an ancestor has `display: none` and a
+			// descendant has `display: flex`, `getComputedStyle` will return `flex`.
+			// This is inaccurate because the descendant's styles aren't actually computed due
+			// to the ancestor being `display: none`, resulting in `getComputedStyle` returning the wrong value.
+		} else if ( behavior === 'ANCESTOR_SPECIFIC_OVERRIDE' ) {
+			let bestValue = null;
+			let bestIndex = -1;
+			const lastIndex = stopValue.length - 1; // Highest priority index.
+
+			while ( currentElement ) {
+				const computedStyle = window.getComputedStyle( currentElement );
+				const value = computedStyle.getPropertyValue( property );
+
+				const valueIndex = stopValue.indexOf( value );
+				if ( valueIndex !== -1 ) {
+					// Value found in stopValue array.
+					// Update if this value has higher priority (later in array).
+					if ( valueIndex > bestIndex ) {
+						bestValue = value;
+						bestIndex = valueIndex;
+					}
+
+					// Only break if we found the last (highest priority) value.
+					if ( valueIndex === lastIndex ) {
+						break;
+					}
+				}
+				currentElement = currentElement.parentElement;
+			}
+
+			// Fallback if no stopValue found, use the element's own computed value.
+			if ( bestValue === null ) {
+				bestValue = window
+					.getComputedStyle( element )
+					.getPropertyValue( property );
+			}
+
+			styles[ property ] = bestValue;
+		}
+	}
+
+	const elementData = elementsByXPath.get( xpath );
+	Object.assign( elementData, { computedStyles: styles } );
+	debounceCompressUrlMetric();
+}
+
+/**
  * Compresses a JSON string using CompressionStream API.
  *
  * @param {string} jsonString - JSON string to compress.
@@ -871,6 +942,7 @@ export default async function detect( {
 					extendRootData,
 					getElementData,
 					extendElementData,
+					captureElementStyles,
 				} );
 				if ( initializePromise instanceof Promise ) {
 					extensionInitializePromises.push( initializePromise );

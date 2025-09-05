@@ -189,6 +189,15 @@ final class Image_Prioritizer_Img_Tag_Visitor extends Image_Prioritizer_Tag_Visi
 			);
 		}
 
+		// I think it would make more sense localize this data once and not pollute the element markup.
+		$encoded_style_capture = wp_json_encode(
+			image_prioritizer_element_item_schema_properties( array( 'behavior', 'stopValue' ) ),
+			JSON_HEX_TAG | JSON_UNESCAPED_SLASHES
+		);
+		if ( is_string( $encoded_style_capture ) ) {
+			$processor->set_meta_attribute( 'style-capture', $encoded_style_capture );
+		}
+
 		return true;
 	}
 
