@@ -52,6 +52,7 @@ function image_prioritizer_init( string $optimization_detective_version ): void 
 	add_filter( 'od_extension_module_urls', 'image_prioritizer_filter_extension_module_urls' );
 	add_filter( 'od_url_metric_schema_root_additional_properties', 'image_prioritizer_add_root_schema_properties' );
 	add_filter( 'rest_request_before_callbacks', 'image_prioritizer_filter_rest_request_before_callbacks', 10, 3 );
+	add_filter( 'od_url_metric_schema_element_item_additional_properties', 'image_prioritizer_add_element_item_schema_properties' );
 }
 
 /**
@@ -151,6 +152,60 @@ function image_prioritizer_add_root_schema_properties( $additional_properties ):
 		),
 	);
 	return $additional_properties;
+}
+
+/**
+ * Adds additional properties to the element item schema for image prioritizer.
+ *
+ * @since n.e.x.t
+ * @access private
+ *
+ * @param array<string, array{type: string}>|mixed $additional_properties Additional properties.
+ * @return array<string, array{type: string}> Additional properties.
+ */
+function image_prioritizer_add_element_item_schema_properties( $additional_properties ): array {
+	if ( ! is_array( $additional_properties ) ) {
+		$additional_properties = array();
+	}
+
+	$additional_properties['computedStyles'] = array(
+		'type'       => 'object',
+		'properties' => image_prioritizer_element_item_schema_properties(),
+	);
+	return $additional_properties;
+}
+
+/**
+ * Returns the schema properties for an element item.
+ *
+ * @since n.e.x.t
+ * @access private
+ *
+ * @return array<string, array{type: string}> Schema properties.
+ */
+function image_prioritizer_element_item_schema_properties(): array {
+	return array(
+		'visibility'         => array(
+			'type'     => 'string',
+			'enum'     => array( 'collapse', 'hidden', 'visible' ),
+			'required' => true,
+		),
+		'display'            => array(
+			'type'     => 'string',
+			'enum'     => array( 'block', 'inline', 'flex', 'grid', 'none' ),
+			'required' => true,
+		),
+		'opacity'            => array(
+			'type'     => 'string',
+			'pattern'  => '^(0|1|0?\.[0-9]+)$',
+			'required' => true,
+		),
+		'content-visibility' => array(
+			'type'     => 'string',
+			'enum'     => array( 'visible', 'hidden', 'auto' ),
+			'required' => true,
+		),
+	);
 }
 
 /**

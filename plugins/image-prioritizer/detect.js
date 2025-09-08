@@ -27,10 +27,16 @@ export const name = 'Image Prioritizer';
  * @type {InitializeCallback}
  * @param {InitializeArgs} args Args.
  */
-export async function initialize( { log, onLCP, extendRootData } ) {
+export async function initialize( {
+	log,
+	onLCP,
+	extendRootData,
+	extendCapturedStyles,
+} ) {
 	onLCP(
-		( metric ) => {
+		async ( metric ) => {
 			handleLCPMetric( metric, extendRootData, log );
+			handleCaptureStyles( extendCapturedStyles );
 		},
 		{
 			// This avoids needing to click to finalize LCP candidate. While this is helpful for testing, it also
@@ -116,4 +122,67 @@ function handleLCPMetric( metric, extendRootData, log ) {
 			lcpElementExternalBackgroundImage: externalBackgroundImage,
 		} );
 	}
+}
+
+/**
+ * Handles the capture of styles from IMG elements using `checkVisibility`.
+ *
+ * @param {Function} extendCapturedStyles - Function to extend captured styles.
+ */
+async function handleCaptureStyles( extendCapturedStyles ) {
+	if ( typeof requestIdleCallback === 'function' ) {
+		await new Promise( ( resolve ) => {
+			requestIdleCallback( resolve );
+		} );
+	}
+
+	requestAnimationFrame( () => {
+		const imgElements =
+			document.body.querySelectorAll( 'img[data-od-xpath]' );
+		for ( const imgElement of imgElements ) {
+			// If this is false, it could mean the image element or its ancestor has
+			// `display: none`, `content-visibility: hidden`, or is inside a `<details>` element.
+			// For all other cases this will be true.
+			const mainVisible = imgElement.checkVisibility();
+
+			const capturedStyles = {
+				visibility: 'visible',
+				display: mainVisible ? 'block' : 'none', // Setting display none for all conditions including `display: none`, `content-visibility: hidden`, or is inside a `<details>` element.
+				opacity: '1',
+				'content-visibility': 'visible',
+			};
+
+			// Check all other cases.
+			if ( mainVisible ) {
+				// Check visibility CSS property.
+				const visibility = imgElement.checkVisibility( {
+					visibilityProperty: true,
+				} );
+
+				// Check opacity CSS property.
+				const opacity = imgElement.checkVisibility( {
+					opacityProperty: true,
+				} );
+
+				// Check content-visibility CSS property.
+				const contentVisibility = imgElement.checkVisibility( {
+					contentVisibilityAuto: true,
+				} );
+
+				capturedStyles.visibility =
+					visibility === false ? 'hidden' : capturedStyles.visibility;
+				capturedStyles.opacity =
+					opacity === false ? '0' : capturedStyles.opacity;
+				capturedStyles[ 'content-visibility' ] =
+					contentVisibility === false
+						? 'auto'
+						: capturedStyles[ 'content-visibility' ];
+			}
+
+			extendCapturedStyles(
+				imgElement.getAttribute( 'data-od-xpath' ),
+				capturedStyles
+			);
+		}
+	} );
 }
