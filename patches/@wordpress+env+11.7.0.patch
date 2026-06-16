@@ -1,0 +1,138 @@
+diff --git a/node_modules/@wordpress/env/lib/config/merge-configs.js b/node_modules/@wordpress/env/lib/config/merge-configs.js
+index bccfcc4..c22f3bd 100644
+--- a/node_modules/@wordpress/env/lib/config/merge-configs.js
++++ b/node_modules/@wordpress/env/lib/config/merge-configs.js
+@@ -46,6 +46,7 @@ function mergeConfig( config, toMerge ) {
+ 			// Some config options are merged together instead of entirely replaced.
+ 			case 'config':
+ 			case 'mappings':
++			case 'dockerImages':
+ 			case 'lifecycleScripts': {
+ 				config[ option ] = Object.assign(
+ 					config[ option ],
+diff --git a/node_modules/@wordpress/env/lib/config/parse-config.js b/node_modules/@wordpress/env/lib/config/parse-config.js
+index 9ee50cd..08d6c1a 100644
+--- a/node_modules/@wordpress/env/lib/config/parse-config.js
++++ b/node_modules/@wordpress/env/lib/config/parse-config.js
+@@ -57,6 +57,7 @@ const mergeConfigs = require( './merge-configs' );
+  * @property {boolean}                   multisite      Whether to set up a multisite installation.
+  * @property {Object}                    config         Mapping of wp-config.php constants to their desired values.
+  * @property {Object.<string, WPSource>} mappings       Mapping of WordPress directories to local directories which should be mounted.
++ * @property {Object.<string, string>}   dockerImages   Mapping of wp-env services to custom Docker base images.
+  * @property {string|null}               phpVersion     Version of PHP to use in the environments, of the format 0.0.
+  */
+ 
+@@ -96,6 +97,7 @@ const DEFAULT_ENVIRONMENT_CONFIG = {
+ 	phpmyadminPort: null,
+ 	multisite: false,
+ 	mappings: {},
++	dockerImages: {},
+ 	config: {
+ 		FS_METHOD: 'direct',
+ 		WP_DEBUG: true,
+@@ -612,6 +614,26 @@ async function parseEnvironmentConfig(
+ 		);
+ 	}
+ 
++	if ( config.dockerImages !== undefined ) {
++		checkObjectWithValues(
++			configFile,
++			`${ environmentPrefix }dockerImages`,
++			config.dockerImages,
++			[ 'string' ],
++			false
++		);
++
++		for ( const service of Object.keys( config.dockerImages ) ) {
++			if ( ! [ 'wordpress', 'cli' ].includes( service ) ) {
++				throw new ValidationError(
++					`Invalid ${ configFile }: "${ environmentPrefix }dockerImages.${ service }" is not a supported service. Use "wordpress" or "cli".`
++				);
++			}
++		}
++
++		parsedConfig.dockerImages = { ...config.dockerImages };
++	}
++
+ 	return parsedConfig;
+ }
+ 
+diff --git a/node_modules/@wordpress/env/lib/config/post-process-config.js b/node_modules/@wordpress/env/lib/config/post-process-config.js
+index 13cd180..afe15de 100644
+--- a/node_modules/@wordpress/env/lib/config/post-process-config.js
++++ b/node_modules/@wordpress/env/lib/config/post-process-config.js
+@@ -235,6 +235,9 @@ function deepCopyRootOptions( config ) {
+ 	if ( rootConfig.mappings !== undefined ) {
+ 		rootConfig.mappings = Object.assign( {}, rootConfig.mappings );
+ 	}
++	if ( rootConfig.dockerImages !== undefined ) {
++		rootConfig.dockerImages = Object.assign( {}, rootConfig.dockerImages );
++	}
+ 	if ( rootConfig.pluginSources !== undefined ) {
+ 		rootConfig.pluginSources = [ ...rootConfig.pluginSources ];
+ 	}
+diff --git a/node_modules/@wordpress/env/lib/runtime/docker/docker-config.js b/node_modules/@wordpress/env/lib/runtime/docker/docker-config.js
+index 0d9e28d..0575b87 100644
+--- a/node_modules/@wordpress/env/lib/runtime/docker/docker-config.js
++++ b/node_modules/@wordpress/env/lib/runtime/docker/docker-config.js
+@@ -83,11 +83,9 @@ function ensureDockerInitialized( config, spinner ) {
+  * @return {string} The dockerfile contents.
+  */
+ function wordpressDockerFileContents( env, config ) {
+-	const phpVersion = config.env[ env ].phpVersion
+-		? ':php' + config.env[ env ].phpVersion
+-		: '';
++	const baseImage = getBaseImage( 'wordpress', env, config );
+ 
+-	return `FROM wordpress${ phpVersion }
++	return `FROM ${ baseImage }
+ 
+ # Update apt sources for archived versions of Debian.
+ 
+@@ -123,11 +121,9 @@ ${ getLoopbackPortConfig( config.env[ env ].port ) }`;
+  * @return {string} The dockerfile contents.
+  */
+ function cliDockerFileContents( env, config ) {
+-	const phpVersion = config.env[ env ].phpVersion
+-		? '-php' + config.env[ env ].phpVersion
+-		: '';
++	const baseImage = getBaseImage( 'cli', env, config );
+ 
+-	return `FROM wordpress:cli${ phpVersion }
++	return `FROM ${ baseImage }
+ 
+ # Switch to root so we can create users.
+ USER root
+@@ -151,6 +147,32 @@ CMD [ "/bin/sh", "-c", "while true; do sleep 2073600; done" ]
+ `;
+ }
+ 
++/**
++ * Resolves the Docker base image for a service.
++ *
++ * @param {string}   service The service name.
++ * @param {string}   env     The environment name.
++ * @param {WPConfig} config  The configuration object.
++ * @return {string} The Docker image reference.
++ */
++function getBaseImage( service, env, config ) {
++	const customImage = config.env[ env ].dockerImages?.[ service ];
++
++	if ( customImage ) {
++		return customImage;
++	}
++
++	const phpVersion = config.env[ env ].phpVersion
++		? service === 'wordpress'
++			? ':php' + config.env[ env ].phpVersion
++			: '-php' + config.env[ env ].phpVersion
++		: '';
++
++	return service === 'wordpress'
++		? `wordpress${ phpVersion }`
++		: `wordpress:cli${ phpVersion }`;
++}
++
+ /**
+  * Generates content for the Dockerfile to install dependencies.
+  *

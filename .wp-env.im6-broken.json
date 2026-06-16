@@ -1,0 +1,22 @@
+{
+	"testsEnvironment": false,
+	"core": null,
+	"plugins": [
+		"./plugins/optimization-detective",
+		"./plugins/auto-sizes",
+		"./plugins/dominant-color-images",
+		"./plugins/embed-optimizer",
+		"./plugins/image-prioritizer",
+		"./plugins/performance-lab",
+		"./plugins/speculation-rules",
+		"./plugins/view-transitions",
+		"./plugins/web-worker-offloading",
+		"./plugins/webp-uploads"
+	],
+	"dockerImages": {
+		"wordpress": "performance-imagick:wp-env-wordpress-im6-broken"
+	},
+	"config": {
+		"WP_DEVELOPMENT_MODE": "plugin"
+	}
+}

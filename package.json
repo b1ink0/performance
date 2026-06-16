@@ -33,6 +33,7 @@
 		"lint-staged": "^17.0.5",
 		"lodash": "4.18.1",
 		"npm-run-all": "^4.1.5",
+		"patch-package": "8.0.1",
 		"typescript": "^6.0.3",
 		"webpackbar": "^7.0.0"
 	},
@@ -93,8 +94,19 @@
 		"test-php-multisite:web-worker-offloading": "wp-env --config=.wp-env.test.json run wordpress --env-cwd=/var/www/html/wp-content/plugins/performance composer test-multisite:web-worker-offloading",
 		"test-php-multisite:webp-uploads": "wp-env --config=.wp-env.test.json run wordpress --env-cwd=/var/www/html/wp-content/plugins/performance composer test-multisite:webp-uploads",
 		"update-test-case-snapshots": "bin/update-test-case-snapshots.sh",
+		"wp-env:build-im6-broken": "docker build -f tools/wp-env/wordpress-imagemagick.Dockerfile --build-arg IMAGEMAGICK_VERSION=6.9.11-60 -t performance-imagick:wp-env-wordpress-im6-broken .",
+		"wp-env:build-im6-fixed": "docker build -f tools/wp-env/wordpress-imagemagick.Dockerfile --build-arg IMAGEMAGICK_VERSION=6.9.12-68 -t performance-imagick:wp-env-wordpress-im6-fixed .",
+		"wp-env:start:im6-broken": "wp-env start --config=.wp-env.im6-broken.json --update",
+		"wp-env:start:im6-fixed": "wp-env start --config=.wp-env.im6-fixed.json --update",
+		"wp-env:stop:im6-broken": "wp-env stop --config=.wp-env.im6-broken.json",
+		"wp-env:stop:im6-fixed": "wp-env stop --config=.wp-env.im6-fixed.json",
+		"wp-env:test:start:im6-broken": "wp-env start --config=.wp-env.test.im6-broken.json --update",
+		"wp-env:test:start:im6-fixed": "wp-env start --config=.wp-env.test.im6-fixed.json --update",
+		"wp-env:test:stop:im6-broken": "wp-env stop --config=.wp-env.test.im6-broken.json",
+		"wp-env:test:stop:im6-fixed": "wp-env stop --config=.wp-env.test.im6-fixed.json",
 		"wp-env": "wp-env",
 		"wp-env-test": "wp-env --config=.wp-env.test.json",
+		"postinstall": "patch-package",
 		"prepare": "husky"
 	}
 }
