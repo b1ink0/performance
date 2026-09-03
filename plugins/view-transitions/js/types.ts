@@ -13,16 +13,11 @@ export type ViewTransitionsConfig = {
 	globalTransitionNames?: Record< string, string >;
 	postTransitionNames?: Record< string, string >;
 	animations?: ViewTransitionsAnimationMap;
-	paginationBase: string;
 };
 
 export type InitViewTransitionsFunction = (
 	config: ViewTransitionsConfig
 ) => void;
-
-export type NavigationHistoryEntry = {
-	url: string | null;
-};
 
 declare global {
 	interface Window {
